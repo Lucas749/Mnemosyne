@@ -1,0 +1,9 @@
+{
+  "name": "@mnemosyne/storage",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@mnemosyne/types": "workspace:*"
+  }
+}

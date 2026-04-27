@@ -1,0 +1,9 @@
+{
+  "name": "@mnemosyne/frontend",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@mnemosyne/types": "workspace:*",
+    "@mnemosyne/api": "workspace:*"
+  }
+}

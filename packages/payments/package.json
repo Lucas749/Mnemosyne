@@ -1,0 +1,9 @@
+{
+  "name": "@mnemosyne/payments",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@mnemosyne/types": "workspace:*"
+  }
+}
