@@ -1,4 +1,3 @@
-import 'dotenv/config'
 import { describe, it, expect, beforeAll } from 'vitest'
 import type { StorageClient } from '../client.js'
 import { createStorageClient } from '../client.js'
