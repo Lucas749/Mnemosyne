@@ -196,14 +196,15 @@ contract ChallengeManager is Ownable, ReentrancyGuard {
             ? openChallengeCount[c.entryId] - 1
             : 0;
 
-        // Update validator reputations
-        for (uint256 i = 0; i < c.validatorPanel.length; i++) {
-            address v = c.validatorPanel[i];
-            if (hasVoted[challengeId][v]) {
-                bool votedUphold = _validatorVotedUphold(challengeId, v, c.upholdVotes, c.overturnVotes);
-                validatorRegistry.updateReputation(v, votedUphold == upheld);
-            }
-        }
+    // TODO: track individual validator votes in storage to accurately determine each
+    // validator's choice here. Currently approximates: if upholds >= overturns, assume uphold.
+    for (uint256 i = 0; i < c.validatorPanel.length; i++) {
+      address v = c.validatorPanel[i];
+      if (hasVoted[challengeId][v]) {
+        bool votedUphold = _validatorVotedUphold(challengeId, v, c.upholdVotes, c.overturnVotes);
+        validatorRegistry.updateReputation(v, votedUphold == upheld);
+      }
+    }
 
         emit ChallengeResolved(challengeId, upheld, c.slashedAddress, c.slashAmount);
     }

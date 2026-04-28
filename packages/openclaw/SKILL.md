@@ -6,16 +6,45 @@ tools:
   - bash
 ---
 
+<!-- ─────────────────────────────────────────────────────────────────────────
+  TODO — Before publishing / going to production
+
+  [ ] Replace localhost API URL with hosted endpoint
+        Currently:  http://localhost:3000
+        Replace with: https://api.mnemosyne.eth (or VPS URL once deployed)
+        Set as env var MNEMOSYNE_API_URL in your OpenClaw config or ~/.openclaw/openclaw.json
+
+  [ ] Add API auth token once the hosted API requires authentication
+        Header to add to all requests: Authorization: Bearer $MNEMOSYNE_API_TOKEN
+
+  [ ] Replace the example ENS name `my-agent.mnemosyne.eth` with the agent's real subname
+        Set MNEMOSYNE_ENS in env — this is registered via packages/identity (Phase 8)
+
+  [ ] Wire the on-chain stake flow once contracts are deployed to 0G testnet
+        Storing via the REST API does NOT stake ETH yet — that requires a wallet tx to
+        MnemosyneRegistry.submit() which is not yet called from this skill
+
+  [ ] Replace `http://localhost:3000` references in load-manifest with hosted URL
+
+  [ ] Add error handling instructions for when the API is unreachable
+        (currently the agent will get a connection error with no guidance)
+─────────────────────────────────────────────────────────────────────────── -->
+
 # Mnemosyne Memory
 
 Mnemosyne is your persistent, decentralized memory layer. Unlike local Markdown memory files, memories stored here live on 0G Storage (content-addressed, permanent), earn royalties when queried by other agents, and can be challenged if incorrect — bad data is economically destroyed.
 
 ## Configuration
 
-The API runs at `MNEMOSYNE_API_URL` (default: `http://localhost:3000`).
-You must have the Mnemosyne API running: `cd packages/api && pnpm start`
+The API runs at `MNEMOSYNE_API_URL`.
 
-Your ENS identity is set via `MNEMOSYNE_ENS` (e.g. `my-agent.mnemosyne.eth`).
+| Env var | Dev default | Production |
+|---|---|---|
+| `MNEMOSYNE_API_URL` | `http://localhost:3000` | `https://api.mnemosyne.eth` _(TODO: set once hosted)_ |
+| `MNEMOSYNE_ENS` | `my-agent.mnemosyne.eth` | your registered subname _(TODO: register via Phase 8)_ |
+| `MNEMOSYNE_API_TOKEN` | _(not required yet)_ | bearer token _(TODO: add once API auth is live)_ |
+
+For local dev, start the API with: `cd packages/api && pnpm start`
 
 ## When to store a memory
 

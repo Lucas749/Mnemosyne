@@ -5,8 +5,8 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /// @title RoyaltyVault — accumulates query fees and distributes royalties to contributors
-/// @dev Uniswap swap routing for non-ETH payment tokens is handled off-chain by the keeper
-///      which calls distribute() after swapping, or by a future on-chain integration.
+// TODO: wire Uniswap SwapRouter02 — read payment.token from ENS per contributor,
+//       swap ETH → preferred token before sending (packages/payments, Phase 9)
 contract RoyaltyVault is Ownable, ReentrancyGuard {
     uint256 public constant DISTRIBUTION_THRESHOLD = 0.1 ether;
 

@@ -7,6 +7,7 @@ const dec = new TextDecoder()
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
 
+// TODO: callers should populate blob.checksum = keccak256(content) before calling this
 export async function uploadEntryBlob(
   client: StorageClient,
   blob: EntryBlob,

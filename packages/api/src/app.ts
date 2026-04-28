@@ -35,12 +35,13 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom
 }
 
+// TODO: add Authorization: Bearer token middleware once API is publicly hosted
 export function createMnemosyneApp(compute: ComputeClient, storage: StorageClient) {
   const app = express()
   app.use(cors())
   app.use(express.json())
 
-  // In-memory vector cache — seeded from 0G manifests on demand
+  // TODO: replace in-memory cache with SQLite — entries are lost on restart
   const cache = new Map<string, CachedEntry>()
 
   app.get('/health', (_req, res) => {
@@ -80,6 +81,9 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       domain,
     })
 
+    // TODO: call MnemosyneRegistry.submit() on-chain so entry is staked (requires deployed contract addresses)
+    // TODO: call setMemoryIndex() from packages/identity to update ENS memory.index after storing
+
     const out: StoreResponse = { entryId, storageRef, embeddingRef }
     res.json(out)
   })
@@ -115,6 +119,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       }))
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, topK)
+
+    // TODO: call RoyaltyVault.depositQueryFee() on-chain for matched entries (requires deployed contracts)
 
     const out: QueryResponse = { matches }
     res.json(out)

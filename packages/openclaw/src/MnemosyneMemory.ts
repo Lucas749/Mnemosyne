@@ -66,10 +66,10 @@ export class MnemosyneMemory implements MemoryAdapter {
       checksum:    '',
     }
 
-    const [storageRef, embBlob] = await Promise.all([
-      uploadEntryBlob(this.storage, blob),
-      generateEmbedding(this.compute, entryId, content),
-    ])
+    // TODO: these must stay sequential on 0G testnet — parallel uploads cause nonce collisions
+    // (Promise.all is safe once on mainnet or when using separate wallets per operation)
+    const storageRef = await uploadEntryBlob(this.storage, blob)
+    const embBlob    = await generateEmbedding(this.compute, entryId, content)
 
     const embeddingRef = await uploadEmbeddingBlob(this.storage, embBlob)
 

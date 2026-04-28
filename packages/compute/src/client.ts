@@ -47,12 +47,12 @@ export async function createComputeClient(
     }
   }
 
-  // pick the first available chat inference service
   const services = await broker.inference.listService()
   if (!services || services.length === 0) {
     throw new Error('No 0G Compute inference services available')
   }
 
+  // TODO: prefer a Qwen model by name rather than blindly taking services[0]
   const svc = services[0]!
   const { endpoint, model } = await broker.inference.getServiceMetadata(svc.provider)
 
