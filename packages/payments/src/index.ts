@@ -126,7 +126,7 @@ export async function swapETHForToken(
     return {
       txHash: orderData.orderHash,
       tokenOut,
-      amountOut: (quote as any).quoteDecimals ?? '0',
+      amountOut: (quote as any).output?.amount ?? '0',
     }
   } else {
     txRequest = await buildSwap(quote, permitData)
@@ -143,8 +143,9 @@ export async function swapETHForToken(
     gas: txRequest.gasLimit ? BigInt(txRequest.gasLimit as string) : undefined,
   })
 
-  return { txHash, tokenOut, amountOut: (quote as any).quoteDecimals ?? '0' }
+  return { txHash, tokenOut, amountOut: (quote as any).output?.amount ?? '0' }
 }
+
 
 /**
  * Route a royalty payment to a contributor.
@@ -157,7 +158,9 @@ export async function routeRoyalty(
   amountWei: bigint,
   options: { chainId?: number; rpcUrl?: string; ensRpcUrl?: string } = {},
 ): Promise<{ txHash: `0x${string}`; tokenOut: string; method: 'swap' | 'eth' }> {
-  const paymentToken = await getPaymentToken(contributorEnsName, { rpcUrl: options.ensRpcUrl })
+  const paymentToken = await getPaymentToken(contributorEnsName, {
+    ...(options.ensRpcUrl && { rpcUrl: options.ensRpcUrl }),
+  })
 
   if (paymentToken) {
     const result = await swapETHForToken(privateKey, paymentToken, amountWei, contributorEnsName, options)
