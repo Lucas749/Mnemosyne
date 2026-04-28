@@ -4,3 +4,7 @@ node_modules/
 dist/
 out/
 .local/
+
+# Foundry build artifacts
+packages/contracts/out/
+packages/contracts/cache/
