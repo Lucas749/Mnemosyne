@@ -1,12 +1,14 @@
-import { createPublicClient, createWalletClient, http } from 'viem'
+import { createPublicClient, createWalletClient, http, keccak256, namehash, toHex } from 'viem'
 import { sepolia } from 'viem/chains'
 import { privateKeyToAccount } from 'viem/accounts'
 import { addEnsContracts } from '@ensdomains/ensjs'
-import { getTextRecord } from '@ensdomains/ensjs/public'
-import { setTextRecord } from '@ensdomains/ensjs/wallet'
+import { getTextRecord, getAvailable, getPrice } from '@ensdomains/ensjs/public'
+import { setTextRecord, commitName, registerName } from '@ensdomains/ensjs/wallet'
+import { randomSecret } from '@ensdomains/ensjs/utils'
 
 const MEMORY_INDEX_KEY = 'memory.index'
 const PAYMENT_TOKEN_KEY = 'payment.token'
+const ONE_YEAR_SECONDS = 31_536_000
 
 export interface IdentityOptions {
   /** Ethereum JSON-RPC URL (defaults to ENS_RPC_URL env or public Sepolia) */
@@ -34,6 +36,17 @@ function makeWalletClient(privateKey: `0x${string}`, rpcUrl: string) {
     account,
   })
 }
+
+const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e' as const
+const REGISTRY_ABI = [{
+  name: 'setSubnodeOwner',
+  type: 'function' as const,
+  inputs: [{ type: 'bytes32' }, { type: 'bytes32' }, { type: 'address' }],
+  outputs: [{ type: 'bytes32' }],
+  stateMutability: 'nonpayable' as const,
+}]
+
+// ─── Text records ─────────────────────────────────────────────────────────────
 
 /** Read memory.index text record from an ENS name (→ 0G manifest rootHash). */
 export async function getMemoryIndex(
@@ -88,5 +101,72 @@ export async function setPaymentToken(
     key: PAYMENT_TOKEN_KEY,
     value: token,
     account: client.account,
+  })
+}
+
+// ─── Registration ─────────────────────────────────────────────────────────────
+
+/** Check whether a .eth 2LD is available to register. */
+export async function isNameAvailable(
+  name: string,
+  options: IdentityOptions = {},
+): Promise<boolean> {
+  const client = makePublicClient(rpc(options))
+  return getAvailable(client, { name })
+}
+
+/**
+ * Register a .eth 2LD (e.g. "mnemosyne.eth") via the two-step commit/reveal flow.
+ * Waits 65 seconds between commit and register for the minimum commitment age.
+ * @returns { commitHash, registerHash }
+ */
+export async function registerEthName(
+  privateKey: `0x${string}`,
+  name: string,
+  options: IdentityOptions & { durationSeconds?: number } = {},
+): Promise<{ commitHash: `0x${string}`; registerHash: `0x${string}` }> {
+  const rpcUrl   = rpc(options)
+  const pub      = makePublicClient(rpcUrl)
+  const wallet   = makeWalletClient(privateKey, rpcUrl)
+  const owner    = wallet.account.address
+  const duration = options.durationSeconds ?? ONE_YEAR_SECONDS
+
+  const available = await getAvailable(pub, { name })
+  if (!available) throw new Error(`${name} is not available on Sepolia`)
+
+  const { base, premium } = await getPrice(pub, { nameOrNames: name, duration })
+  const value = (base + premium) * 110n / 100n // 10% buffer
+
+  const secret = randomSecret()
+  const params = { name, owner, duration, secret }
+
+  const commitHash = await commitName(wallet, params)
+  console.log(`[identity] commit tx: ${commitHash} — waiting 65s for min commitment age...`)
+  await new Promise(r => setTimeout(r, 65_000))
+
+  const registerHash = await registerName(wallet, { ...params, value })
+  console.log(`[identity] register tx: ${registerHash}`)
+
+  return { commitHash, registerHash }
+}
+
+/**
+ * Create a subname under a name you own.
+ * e.g. registerSubname("mnemosyne.eth", "agent", owner) → creates "agent.mnemosyne.eth"
+ * @returns transaction hash
+ */
+export async function registerSubname(
+  privateKey: `0x${string}`,
+  parentName: string,
+  label: string,
+  owner: `0x${string}`,
+  options: IdentityOptions = {},
+): Promise<`0x${string}`> {
+  const wallet = makeWalletClient(privateKey, rpc(options))
+  return wallet.writeContract({
+    address: ENS_REGISTRY,
+    abi: REGISTRY_ABI,
+    functionName: 'setSubnodeOwner',
+    args: [namehash(parentName), keccak256(toHex(label)), owner],
   })
 }

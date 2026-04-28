@@ -170,3 +170,15 @@ cd packages/api && pnpm start
 # Run the Python agent demo
 python mnemosyne-py/example_agent.py
 ```
+
+---
+
+## Deployed contracts & ENS names (Sepolia testnet)
+
+| Item | Value |
+|---|---|
+| Wallet | `0xf2a38D8B44DdD5e12AB955d22f1EABcad0B32eAc` |
+| `mnemosyne.eth` commit | `0x2f3f88fb629da6953b40c8d504bac14aa80f058aad581bdc8891400d76b886c7` |
+| `mnemosyne.eth` register | `0x50f147e5809aab5097c0c8feb43fd7769429c0535950550089a326fa8f2d27a6` |
+| `agent.mnemosyne.eth` create | `0x635944f407919924991de660b8840491d2947515f172250b6431962ec6075a4b` |
+| `demo.mnemosyne.eth` create | `0x170272dbbaa6fd3acafebc3fadf06a3194f40bcc303a3a30ff11781d1cb2d0f9` |
