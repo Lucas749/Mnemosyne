@@ -3,9 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "dependencies": {
     "@0glabs/0g-serving-broker": "latest",
     "@mnemosyne/types": "workspace:*",
-    "openai": "^4.0.0"
+    "ethers": "6.13.1"
+  },
+  "devDependencies": {
+    "dotenv": "^16.0.0",
+    "vitest": "^1.0.0"
   }
 }
