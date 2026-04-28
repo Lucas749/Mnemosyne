@@ -7,42 +7,38 @@ tools:
 ---
 
 <!-- ─────────────────────────────────────────────────────────────────────────
-  TODO — Before publishing / going to production
+  TODO — Before going to production
 
   [ ] Replace localhost API URL with hosted endpoint
         Currently:  http://localhost:3000
         Replace with: https://api.mnemosyne.eth (or VPS URL once deployed)
-        Set as env var MNEMOSYNE_API_URL in your OpenClaw config or ~/.openclaw/openclaw.json
+        Set as env var MNEMOSYNE_API_URL in your OpenClaw config
 
   [ ] Add API auth token once the hosted API requires authentication
         Header to add to all requests: Authorization: Bearer $MNEMOSYNE_API_TOKEN
 
   [ ] Replace the example ENS name `my-agent.mnemosyne.eth` with the agent's real subname
-        Set MNEMOSYNE_ENS in env — this is registered via packages/identity (Phase 8)
+        Subnames are pre-provisioned: agent.mnemosyne.eth, demo.mnemosyne.eth
+        Additional subnames can be registered via packages/identity
 
-  [ ] Wire the on-chain stake flow once contracts are deployed to 0G testnet
-        Storing via the REST API does NOT stake ETH yet — that requires a wallet tx to
-        MnemosyneRegistry.submit() which is not yet called from this skill
+  [x] Wire on-chain stake — MnemosyneRegistry.submit() now called non-blocking
+        from POST /store after every upload (0.005 A0GI stake, 0G testnet chain 16602)
+        Contracts: see README.md "Deployed contracts" section
 
-  [ ] Replace `http://localhost:3000` references in load-manifest with hosted URL
-
-  [ ] Add error handling instructions for when the API is unreachable
-        (currently the agent will get a connection error with no guidance)
+  [ ] Replace localhost in load-from-ens with hosted URL once deployed
 ─────────────────────────────────────────────────────────────────────────── -->
 
 # Mnemosyne Memory
 
-Mnemosyne is your persistent, decentralized memory layer. Unlike local Markdown memory files, memories stored here live on 0G Storage (content-addressed, permanent), earn royalties when queried by other agents, and can be challenged if incorrect — bad data is economically destroyed.
+Mnemosyne is your persistent, decentralized memory layer. Unlike local Markdown memory files, memories stored here live on 0G Storage (content-addressed, permanent), are staked on-chain as ERC-7857 iNFTs, earn royalties when queried by other agents (distributed via Uniswap to the contributor's preferred token), and can be challenged if incorrect — bad data is economically destroyed.
 
 ## Configuration
-
-The API runs at `MNEMOSYNE_API_URL`.
 
 | Env var | Dev default | Production |
 |---|---|---|
 | `MNEMOSYNE_API_URL` | `http://localhost:3000` | `https://api.mnemosyne.eth` _(TODO: set once hosted)_ |
-| `MNEMOSYNE_ENS` | `my-agent.mnemosyne.eth` | your registered subname _(TODO: register via Phase 8)_ |
-| `MNEMOSYNE_API_TOKEN` | _(not required yet)_ | bearer token _(TODO: add once API auth is live)_ |
+| `MNEMOSYNE_ENS` | `my-agent.mnemosyne.eth` | your registered subname |
+| `MNEMOSYNE_API_TOKEN` | _(not required yet)_ | bearer token _(TODO: add once auth is live)_ |
 
 For local dev, start the API with: `cd packages/api && pnpm start`
 
@@ -74,9 +70,9 @@ Content-Type: application/json
 }
 ```
 
-The response gives you an `entryId` and `storageRef` — these are the permanent 0G addresses of this memory.
+The response gives you `entryId`, `storageRef` (permanent 0G address), and `onchainId` (bytes32 from MnemosyneRegistry).
 
-Example: After researching that the Ethereum merge happened on Sep 15 2022, store it:
+Example:
 ```json
 {
   "content": "The Ethereum merge (transition from PoW to PoS) occurred on September 15, 2022 at epoch 144896.",
@@ -101,27 +97,23 @@ Content-Type: application/json
 }
 ```
 
-The response is a ranked list of `matches` by semantic similarity (0–1). Use the top results as context before generating your answer.
+The response is a ranked list of `matches` by semantic similarity (0–1).
 
-If `similarity > 0.8`, treat the match as a high-confidence recall.
-If `similarity` is between 0.5–0.8, treat it as a relevant hint.
-Below 0.5, discard.
+- `similarity >= 0.8` → high-confidence recall, use directly in your answer
+- `similarity 0.5–0.8` → relevant hint, use with caveat
+- `similarity < 0.5` → discard
+
+Each query also deposits a micro-royalty into the RoyaltyVault on-chain for each matched contributor.
 
 ## Loading another agent's memory
 
-To bootstrap your context from another agent's verified memory (by ENS name):
-
-1. First, resolve their `memory.index` ENS text record to get the 0G manifest reference
-2. Then load it:
+To bootstrap your context from another agent's memory by ENS name:
 
 ```
-POST $MNEMOSYNE_API_URL/load-manifest
-Content-Type: application/json
-
-{ "manifestRef": "<0g manifest ref from ENS memory.index>" }
+GET $MNEMOSYNE_API_URL/load-from-ens/agent.mnemosyne.eth
 ```
 
-This seeds your local cache with all of their active, verified entries.
+This resolves the ENS `memory.index` text record → downloads the 0G manifest → seeds your local cache with all of their verified entries.
 
 ## Memory domains
 
@@ -143,3 +135,57 @@ When asked to research a topic:
 5. Answer the user using the combined stored + freshly-researched context
 
 This pattern means your knowledge compounds: every research session makes future sessions faster and earns royalties when other agents ask about the same topic.
+
+## Worked example — OpenClaw agent interaction
+
+Below is a realistic transcript of an OpenClaw agent using this skill.
+
+---
+
+**User:** When did Ethereum switch to proof of stake? Research it if you don't know.
+
+**Agent (step 1 — recall first):**
+```
+web_fetch POST http://localhost:3000/query
+{"text": "Ethereum proof of stake transition date", "topK": 3}
+```
+
+*Response:*
+```json
+{
+  "matches": [
+    {
+      "entryId": "0xabc123...",
+      "content": "The Ethereum merge (transition from PoW to PoS) occurred on September 15, 2022 at epoch 144896.",
+      "similarity": 0.94,
+      "submittedBy": "demo.mnemosyne.eth"
+    }
+  ]
+}
+```
+
+**Agent (step 2 — high confidence recall, answer directly):**
+
+> Based on verified memory (94% confidence, sourced from demo.mnemosyne.eth):
+> The Ethereum merge occurred on **September 15, 2022** at epoch 144896, transitioning the network from proof-of-work to proof-of-stake.
+
+---
+
+**User:** Bootstrap your context from the research agent.
+
+**Agent:**
+```
+web_fetch GET http://localhost:3000/load-from-ens/agent.mnemosyne.eth
+```
+
+*Response:*
+```json
+{
+  "loaded": 4,
+  "total": 8,
+  "ensName": "agent.mnemosyne.eth",
+  "manifestRef": "0x7f3a..."
+}
+```
+
+> Loaded 4 verified entries from `agent.mnemosyne.eth`. I now have their full knowledge base available for queries.

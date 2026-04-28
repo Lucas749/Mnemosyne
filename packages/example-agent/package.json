@@ -2,11 +2,16 @@
   "name": "@mnemosyne/example-agent",
   "version": "0.1.0",
   "private": true,
-  "main": "./src/index.ts",
+  "scripts": {
+    "demo": "tsx src/demo.ts",
+    "start": "tsx src/demo.ts"
+  },
   "dependencies": {
-    "@mnemosyne/storage": "workspace:*",
-    "@mnemosyne/compute": "workspace:*",
-    "@mnemosyne/identity": "workspace:*",
     "@mnemosyne/types": "workspace:*"
+  },
+  "devDependencies": {
+    "dotenv": "^16.0.0",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3"
   }
 }
