@@ -182,3 +182,14 @@ python mnemosyne-py/example_agent.py
 | `mnemosyne.eth` register | `0x50f147e5809aab5097c0c8feb43fd7769429c0535950550089a326fa8f2d27a6` |
 | `agent.mnemosyne.eth` create | `0x635944f407919924991de660b8840491d2947515f172250b6431962ec6075a4b` |
 | `demo.mnemosyne.eth` create | `0x170272dbbaa6fd3acafebc3fadf06a3194f40bcc303a3a30ff11781d1cb2d0f9` |
+
+## Deployed contracts (0G-Galileo-Testnet, chain 16602)
+
+| Contract | Address |
+|---|---|
+| `StakeVault` | `0x0dc364a71854eA993Bd3814f212855F8083A9195` |
+| `MnemosyneINFT` | `0x34aB4396C7c45D678f78b74353918058054CEee7` |
+| `MnemosyneRegistry` | `0xe35bbF9305C3dF4164e0E6D9f963fE904660950F` |
+| `ValidatorRegistry` | `0x5bd5f438c9F1964B060594e8E83439eeA8601DeA` |
+| `ChallengeManager` | `0x72890aCfdA3A64E055358B36438E62fE9bB5cC3e` |
+| `RoyaltyVault` | `0x0Dd70350A12aD5CDE3Eb1f99a6dEb8F96563412b` |

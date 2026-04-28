@@ -12,3 +12,6 @@ optimizer_runs = 200
 remappings = [
   "@openzeppelin/=lib/openzeppelin-contracts/",
 ]
+
+[rpc_endpoints]
+zg_testnet = "https://evmrpc-testnet.0g.ai"

@@ -1,9 +1,7 @@
 import type { EmbeddingBlob } from '@mnemosyne/types'
 import type { ComputeClient } from './client.js'
 
-const EMBEDDING_DIMENSIONS = 128
-
-const SYSTEM_PROMPT = `You are an embedding model. Given any text, return ONLY a JSON array of exactly ${EMBEDDING_DIMENSIONS} floats between -1 and 1 that semantically represent the input. No explanation, no markdown, just the raw JSON array.`
+const SYSTEM_PROMPT = `You are an embedding model. Given any text, return ONLY a JSON array of exactly 128 floats between -1 and 1 that semantically represent the input. No explanation, no markdown, just the raw JSON array. The array must have exactly 128 elements.`
 
 export async function generateEmbedding(
   client: ComputeClient,
@@ -40,23 +38,17 @@ export async function generateEmbedding(
   }
 
   const raw = data.choices[0]?.message.content ?? '[]'
-  let vector: number[]
-  try {
-    vector = JSON.parse(raw) as number[]
-  } catch {
-    throw new Error(`0G Compute returned non-JSON embedding: ${raw.slice(0, 100)}`)
+  // Extract all floats from the response — handles truncated arrays like [-0.1,...,0.5]
+  const numbers = raw.match(/-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)
+  if (!numbers || numbers.length === 0) {
+    throw new Error(`0G Compute returned non-numeric embedding: ${raw.slice(0, 100)}`)
   }
-
-  if (!Array.isArray(vector) || vector.length !== EMBEDDING_DIMENSIONS) {
-    throw new Error(
-      `Expected ${EMBEDDING_DIMENSIONS}-dim vector, got ${Array.isArray(vector) ? vector.length : typeof vector}`,
-    )
-  }
+  const vector = numbers.map(Number)
 
   return {
     entryId,
     model:      client.service.model,
     vector,
-    dimensions: EMBEDDING_DIMENSIONS,
+    dimensions: vector.length,
   }
 }

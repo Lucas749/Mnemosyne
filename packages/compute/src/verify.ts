@@ -7,18 +7,22 @@ export interface VerificationResult {
   teeVerified: boolean  // whether the TEE signature was confirmed
 }
 
-const SYSTEM_PROMPT = `You are a fact-checking agent. Given a knowledge base entry and a challenge against it, evaluate whether the entry should be upheld or overturned.
+const SYSTEM_PROMPT = `You are a fact-checking agent. You will be given a KNOWLEDGE BASE ENTRY and a CHALLENGE against it.
 
-Respond ONLY with valid JSON in this exact shape:
+Decide which action to take:
+- A = KEEP the entry (the entry is factually accurate; the challenge is wrong)
+- B = REMOVE the entry (the entry is factually wrong; the challenge is correct)
+
+Respond ONLY with valid JSON:
 {
-  "verdict": "uphold" | "overturn",
+  "action": "A" | "B",
   "confidence": <number 0-1>,
   "reasoning": "<one paragraph>"
 }
 
-- "uphold" means the entry is accurate and the challenge is wrong
-- "overturn" means the entry is inaccurate and should be removed
-- confidence reflects how certain you are (0.5 = unsure, 1.0 = certain)`
+action A = KEEP entry (entry is correct)
+action B = REMOVE entry (entry is wrong)
+confidence: 0.5 = unsure, 1.0 = certain`
 
 export async function verifyClaim(
   client: ComputeClient,
@@ -73,7 +77,7 @@ export async function verifyClaim(
   }
 
   const raw = data.choices[0]?.message.content ?? '{}'
-  let parsed: { verdict: 'uphold' | 'overturn'; confidence: number; reasoning: string }
+  let parsed: { action: 'A' | 'B'; confidence: number; reasoning: string }
   try {
     parsed = JSON.parse(raw)
   } catch {
@@ -81,7 +85,7 @@ export async function verifyClaim(
   }
 
   return {
-    verdict:     parsed.verdict,
+    verdict:     parsed.action === 'A' ? 'uphold' : 'overturn',
     confidence:  parsed.confidence,
     reasoning:   parsed.reasoning,
     teeVerified,
