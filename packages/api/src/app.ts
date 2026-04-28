@@ -12,6 +12,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
+import { routeRoyalty } from '@mnemosyne/payments'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
 import type { StorageClient } from '@mnemosyne/storage'
@@ -23,6 +24,7 @@ interface CachedEntry {
   storageRef: string
   tags: string[]
   domain?: string
+  submittedBy?: string
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -81,6 +83,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       storageRef,
       tags,
       domain,
+      submittedBy,
     })
 
     // TODO: call MnemosyneRegistry.submit() on-chain so entry is staked (requires deployed contract addresses)
@@ -136,11 +139,23 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         storageRef: e.storageRef,
         tags: e.tags,
         domain: e.domain as any,
+        submittedBy: e.submittedBy,
       }))
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, topK)
 
-    // TODO: call RoyaltyVault.depositQueryFee() on-chain for matched entries (requires deployed contracts)
+    // Fire-and-forget micro-royalty payments via Uniswap if configured
+    const royaltyKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
+    if (royaltyKey) {
+      const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000') // 0.001 ETH default
+      for (const match of matches) {
+        if (match.submittedBy?.endsWith('.eth')) {
+          routeRoyalty(royaltyKey, match.submittedBy, royaltyWei, {
+            ensRpcUrl: process.env.SEPOLIA_RPC,
+          }).catch(() => {}) // non-blocking; payment failures must not break queries
+        }
+      }
+    }
 
     const out: QueryResponse = { matches }
     res.json(out)
@@ -202,11 +217,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
           storageRef: entry.storageRef,
           tags: entry.tags,
           domain: entry.domain,
+          submittedBy: ensName,
         })
-      }),
-    )
-
-    res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
   })
 
   return app
