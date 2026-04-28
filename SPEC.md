@@ -142,21 +142,34 @@ A request to retrieve entries from the knowledge base.
 ## 3. Smart Contracts
 
 ### 3.1 `MnemosyneRegistry.sol`
-Central registry. Owns all entry state.
+Central registry. Owns all entry state. Mints ERC-7857 iNFTs when entries go active.
 
 **Functions:**
 ```solidity
-function submit(string calldata content, string calldata storageRef, string[] calldata tags, EntryDomain domain) external payable returns (bytes32 entryId)
+function submit(string calldata storageRef, string calldata embeddingRef, string[] calldata tags, EntryDomain domain) external payable returns (bytes32 entryId)
 function getEntry(bytes32 entryId) external view returns (Entry memory)
-function activateEntry(bytes32 entryId) external  // called by Challenge Watcher keeper after window
-function burnEntry(bytes32 entryId) external       // called by keeper on slash or expiry
+function activateEntry(bytes32 entryId) external  // called by Challenge Watcher keeper — mints iNFT
+function burnEntry(bytes32 entryId) external       // called by keeper on slash or expiry — burns iNFT
 function recordQuery(bytes32 entryId) external     // called by query router
 ```
+
+**iNFT minting (ERC-7857):**
+When `activateEntry()` is called the registry mints an ERC-7857 iNFT for the submitter:
+```solidity
+IntelligentData[] memory iData = new IntelligentData[](1);
+iData[0] = IntelligentData({
+    dataDescription: entry.domain,         // e.g. "factual"
+    dataHash:        keccak256(abi.encodePacked(entry.storageRef))
+});
+uint256 tokenId = iNFTContract.mint(iData, entry.submitter);
+entries[entryId].inftTokenId = tokenId;
+```
+The `dataHash` anchors the iNFT to the exact 0G Storage blob. If the entry is burned, `iNFTContract.burn(tokenId)` is called — ownership and royalty rights are destroyed with the entry.
 
 **Events:**
 ```solidity
 event EntrySubmitted(bytes32 indexed entryId, address indexed submitter, uint256 stake)
-event EntryActivated(bytes32 indexed entryId)
+event EntryActivated(bytes32 indexed entryId, uint256 inftTokenId)
 event EntryBurned(bytes32 indexed entryId, string reason)
 event EntryContested(bytes32 indexed entryId, uint256 challengeCount)
 ```
@@ -364,7 +377,77 @@ Six persistent keeper jobs. All are autonomous — no human trigger needed.
 
 ---
 
-## 6. Storage Layer (0G)
+## 6. Compute Layer (0G Compute)
+
+0G Compute provides decentralized AI inference via an **OpenAI-compatible API**. Mnemosyne uses it for two things: generating entry embeddings at submission time, and running LLM-based verification during the challenge process.
+
+### 6.1 Setup
+
+```bash
+pnpm add @0glabs/0g-serving-broker
+```
+
+Authentication uses a bearer token generated from the CLI:
+```bash
+npx 0g-serving-broker generate-token
+# → app-sk-<SECRET>
+```
+
+The client is a standard OpenAI SDK instance pointed at the 0G Compute endpoint:
+```typescript
+import OpenAI from 'openai'
+
+const client = new OpenAI({
+  baseURL: 'https://api.compute.0g.ai/v1',  // 0G Compute endpoint
+  apiKey:  process.env.ZG_COMPUTE_TOKEN,     // app-sk-<SECRET>
+})
+```
+
+### 6.2 Available models
+
+| Model | Type | Network |
+|---|---|---|
+| `Qwen 2.5 7B Instruct` | Chat | Testnet |
+| `Qwen3.6-Plus` | Chat | Mainnet |
+| `GLM-5-FP8` | Chat | Mainnet |
+| `DeepSeek Chat V3` | Chat | Mainnet |
+
+> No dedicated embedding model is available on 0G Compute yet. Embeddings are generated via `Qwen 2.5 7B` with a prompt-based approach on testnet, or via OpenAI `text-embedding-3-small` as a drop-in fallback.
+
+### 6.3 How Mnemosyne uses 0G Compute
+
+**Embedding generation (on submit):**
+```typescript
+// Prompt the model to produce a JSON embedding vector
+const res = await client.chat.completions.create({
+  model:    'Qwen 2.5 7B Instruct',
+  messages: [
+    { role: 'system',  content: 'Return only a JSON array of 128 floats representing the semantic embedding of the user text.' },
+    { role: 'user',    content: entryContent },
+  ],
+})
+const vector = JSON.parse(res.choices[0].message.content)
+```
+
+**Challenge verification (during dispute):**
+When a validator panel needs an LLM assist to evaluate a disputed entry, the Quorum Enforcer calls 0G Compute with the entry content + challenger evidence and asks for a structured verdict:
+```typescript
+const res = await client.chat.completions.create({
+  model:    'Qwen 2.5 7B Instruct',
+  messages: [
+    { role: 'system',  content: 'You are a fact-checking agent. Given a claim and evidence, return JSON: { verdict: "uphold"|"overturn", confidence: 0-1, reasoning: string }' },
+    { role: 'user',    content: `Claim: ${entry.content}\n\nChallenge reason: ${challenge.reason}\n\nEvidence: ${challenge.evidence}` },
+  ],
+})
+```
+This verdict is stored on 0G Storage alongside the challenge, and surfaced to the human validator panel as an AI-assisted recommendation.
+
+### 6.4 TEE verification
+0G Compute runs models in TEEs (Trusted Execution Environments). Responses include a TEE signature that can be verified on-chain via `processResponse()`. For the challenge verification path, we verify the TEE signature before storing the verdict — this makes the AI-assisted verdict cryptographically attestable.
+
+---
+
+## 7. Storage Layer (0G)
 
 ### 6.1 What lives on 0G
 | Artifact | Type | Description |
@@ -563,20 +646,21 @@ mnemosyne/
 ├── packages/
 │   ├── contracts/              # Solidity — Foundry
 │   │   ├── src/
-│   │   │   ├── MnemosyneRegistry.sol
+│   │   │   ├── MnemosyneRegistry.sol   # + ERC-7857 iNFT minting
 │   │   │   ├── ChallengeManager.sol
 │   │   │   ├── ValidatorRegistry.sol
 │   │   │   ├── RoyaltyVault.sol
-│   │   │   └── StakeVault.sol
+│   │   │   ├── StakeVault.sol
+│   │   │   └── interfaces/
+│   │   │       └── IERC7857.sol        # iNFT interface
 │   │   ├── test/
 │   │   └── foundry.toml
 │   │
-│   ├── agents/                 # TypeScript agents
-│   │   ├── contributor/
-│   │   ├── challenger/
-│   │   ├── validator/
-│   │   ├── query/
-│   │   └── ens-reputation/
+│   ├── compute/                # 0G Compute — inference + embeddings
+│   │   └── src/
+│   │       ├── client.ts       # OpenAI-compatible client pointed at 0G
+│   │       ├── embed.ts        # embedding generation via Qwen
+│   │       └── verify.ts       # LLM-assisted challenge verification
 │   │
 │   ├── keepers/                # KeeperHub keeper jobs
 │   │   ├── challenge-watcher/
@@ -586,16 +670,18 @@ mnemosyne/
 │   │   ├── reputation-auditor/
 │   │   └── entry-health-monitor/
 │   │
-│   ├── storage/                # 0G Storage SDK integration
-│   ├── identity/               # ENS SDK integration
-│   ├── payments/               # Uniswap v3 integration
+│   ├── storage/                # 0G Storage SDK integration   ✅ built
+│   ├── identity/               # ENS subname + text records
+│   ├── payments/               # Uniswap v3 royalty routing
 │   ├── p2p/                    # Gensyn AXL node setup
+│   ├── api/                    # Query REST API — RAG over 0G
+│   ├── example-agent/          # Demo agent using Mnemosyne as memory (0G prize Track 1)
 │   └── frontend/               # Next.js dashboard
 │
 ├── shared/
-│   └── types/                  # Shared TypeScript types (source of truth)
+│   └── types/                  # Shared TypeScript types   ✅ built
 │
-├── SPEC.md                     # This file
+├── SPEC.md
 ├── README.md
 ├── package.json
 ├── pnpm-workspace.yaml
@@ -606,16 +692,20 @@ mnemosyne/
 
 ## 12. Build Order
 
-| Phase | Package | Deliverable |
-|---|---|---|
-| 1 | `shared/types` | All TypeScript types — Entry, Challenge, Validator, Vote, Query, Keeper |
-| 2 | `packages/storage` | Store + retrieve entry blobs on 0G; mint iNFT |
-| 3 | `packages/contracts` | `StakeVault` + `MnemosyneRegistry` — submit + activate entries |
-| 4 | `packages/contracts` | `ChallengeManager` + `ValidatorRegistry` — disputes + voting |
-| 5 | `packages/contracts` | `RoyaltyVault` — fee accumulation + distribution |
-| 6 | `packages/p2p` | AXL node setup; message types; broadcast + listen |
-| 7 | `packages/agents` | Contributor, Challenger, Validator agents wired to contracts + AXL |
-| 8 | `packages/identity` | ENS subname registration + text record updates |
-| 9 | `packages/keepers` | All 6 KeeperHub jobs |
-| 10 | `packages/payments` | Uniswap royalty routing |
-| 11 | `packages/frontend` | Dashboard: knowledge base explorer, dispute feed, leaderboard |
+| Phase | Package | Deliverable | Prize target |
+|---|---|---|---|
+| 1 | `shared/types` | All TypeScript types | — |
+| 2 | `packages/storage` | 0G blob upload/download, manifest r/w | 0G Storage |
+| 3 | `packages/compute` | 0G Compute client, embedding via Qwen, LLM challenge verifier | 0G Compute |
+| 4 | `packages/contracts` | `StakeVault` + `MnemosyneRegistry` + ERC-7857 iNFT minting | 0G iNFT |
+| 5 | `packages/contracts` | `ChallengeManager` + `ValidatorRegistry` | — |
+| 6 | `packages/contracts` | `RoyaltyVault` | Uniswap |
+| 7 | `packages/identity` | ENS subname registration, `memory.index` text record | ENS |
+| 8 | `packages/payments` | Uniswap royalty routing with token swap | Uniswap |
+| 9 | `packages/api` | Query REST endpoint — RAG over 0G entries | — |
+| 10 | `packages/keepers` | All 6 KeeperHub jobs | KeeperHub |
+| 11 | `packages/p2p` | Gensyn AXL — challenge broadcast + validator coordination | Gensyn |
+| 12 | `packages/example-agent` | Research agent using Mnemosyne as persistent memory | 0G Track 1 |
+| 13 | `packages/frontend` | Dashboard: knowledge base, dispute feed, leaderboard | — |
+
+**Phases 1–2 complete. Next: Phase 3 — `packages/compute`.**

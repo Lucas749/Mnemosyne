@@ -1,0 +1,11 @@
+{
+  "name": "@mnemosyne/compute",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@0glabs/0g-serving-broker": "latest",
+    "@mnemosyne/types": "workspace:*",
+    "openai": "^4.0.0"
+  }
+}

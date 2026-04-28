@@ -1,0 +1,12 @@
+{
+  "name": "@mnemosyne/example-agent",
+  "version": "0.1.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "dependencies": {
+    "@mnemosyne/storage": "workspace:*",
+    "@mnemosyne/compute": "workspace:*",
+    "@mnemosyne/identity": "workspace:*",
+    "@mnemosyne/types": "workspace:*"
+  }
+}
