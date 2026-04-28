@@ -4,7 +4,9 @@ node_modules/
 dist/
 out/
 .local/
+.DS_Store
 
 # Foundry build artifacts
 packages/contracts/out/
 packages/contracts/cache/
+.DS_Store
