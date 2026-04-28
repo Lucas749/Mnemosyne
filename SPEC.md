@@ -660,9 +660,9 @@ mnemosyne/
 │   │   └── src/
 │   │       ├── client.ts       # OpenAI-compatible client pointed at 0G
 │   │       ├── embed.ts        # embedding generation via Qwen
-│   │       └── verify.ts       # LLM-assisted challenge verification
+│   │       └── verify.ts       # LLM-assisted challenge verification (TEE-attested)
 │   │
-│   ├── keepers/                # KeeperHub keeper jobs
+│   ├── keepers/                # KeeperHub keeper jobs — wired via MCP server
 │   │   ├── challenge-watcher/
 │   │   ├── staleness-reaper/
 │   │   ├── royalty-distributor/
@@ -670,17 +670,26 @@ mnemosyne/
 │   │   ├── reputation-auditor/
 │   │   └── entry-health-monitor/
 │   │
+│   ├── openclaw/               # OpenClaw memory module — @mnemosyne/storage as a drop-in brain
+│   │   └── src/
+│   │       └── MnemosyneMemory.ts   # implements OpenClaw MemoryAdapter interface
+│   │
 │   ├── storage/                # 0G Storage SDK integration   ✅ built
 │   ├── identity/               # ENS subname + text records
-│   ├── payments/               # Uniswap v3 royalty routing
-│   ├── p2p/                    # Gensyn AXL node setup
+│   ├── payments/               # Uniswap v3 royalty routing + x402/MPP
+│   ├── p2p/                    # Gensyn AXL — separate nodes, cross-node comms
 │   ├── api/                    # Query REST API — RAG over 0G
-│   ├── example-agent/          # Demo agent using Mnemosyne as memory (0G prize Track 1)
-│   └── frontend/               # Next.js dashboard
+│   ├── example-agent/          # Demo research agent (0G Track 1 working example)
+│   └── frontend/               # Next.js dashboard + architecture diagram
 │
 ├── shared/
 │   └── types/                  # Shared TypeScript types   ✅ built
 │
+├── docs/
+│   └── architecture.png        # 0G Track 1 required diagram
+│
+├── FEEDBACK.md                 # Uniswap — REQUIRED for prize eligibility
+├── KEEPERHUB_FEEDBACK.md       # KeeperHub — $500 feedback bounty
 ├── SPEC.md
 ├── README.md
 ├── package.json
@@ -690,22 +699,44 @@ mnemosyne/
 
 ---
 
-## 12. Build Order
+## 12. Prize Checklist
 
-| Phase | Package | Deliverable | Prize target |
+Track all hard requirements in one place.
+
+| Prize | Hard requirement | Status |
+|---|---|---|
+| 0G Track 1 | Working example agent | Phase 13 |
+| 0G Track 1 | OpenClaw integration or alternative | Phase 4 (`packages/openclaw`) |
+| 0G Track 1 | Architecture diagram | Phase 14 |
+| 0G Track 2 | iNFT minted + URL on 0G explorer | Phase 5 (post-deploy) |
+| 0G Track 2 | Agent coordination explanation | Gensyn AXL section in spec ✅ |
+| Uniswap | `FEEDBACK.md` in repo root | Stub created ✅ — fill during build |
+| Gensyn | Cross-node AXL comms (not in-process) | Phase 11 |
+| ENS | ENS does real functional work | `memory.index` text record ✅ |
+| KeeperHub | Use MCP server or CLI (not just concept) | Phase 10 |
+| KeeperHub | `KEEPERHUB_FEEDBACK.md` ($500) | Stub created ✅ — fill during build |
+| KeeperHub | x402/MPP payment integration | Phase 8 |
+
+---
+
+## 13. Build Order
+
+| Phase | Package / File | Deliverable | Prize target |
 |---|---|---|---|
-| 1 | `shared/types` | All TypeScript types | — |
-| 2 | `packages/storage` | 0G blob upload/download, manifest r/w | 0G Storage |
-| 3 | `packages/compute` | 0G Compute client, embedding via Qwen, LLM challenge verifier | 0G Compute |
-| 4 | `packages/contracts` | `StakeVault` + `MnemosyneRegistry` + ERC-7857 iNFT minting | 0G iNFT |
-| 5 | `packages/contracts` | `ChallengeManager` + `ValidatorRegistry` | — |
-| 6 | `packages/contracts` | `RoyaltyVault` | Uniswap |
-| 7 | `packages/identity` | ENS subname registration, `memory.index` text record | ENS |
-| 8 | `packages/payments` | Uniswap royalty routing with token swap | Uniswap |
-| 9 | `packages/api` | Query REST endpoint — RAG over 0G entries | — |
-| 10 | `packages/keepers` | All 6 KeeperHub jobs | KeeperHub |
-| 11 | `packages/p2p` | Gensyn AXL — challenge broadcast + validator coordination | Gensyn |
-| 12 | `packages/example-agent` | Research agent using Mnemosyne as persistent memory | 0G Track 1 |
-| 13 | `packages/frontend` | Dashboard: knowledge base, dispute feed, leaderboard | — |
+| 1 | `shared/types` | All TypeScript types | — | ✅ done |
+| 2 | `packages/storage` | 0G blob upload/download, manifest r/w | 0G Storage | ✅ done |
+| 3 | `packages/compute` | 0G Compute client, Qwen embedding, TEE-attested verifier | 0G Compute | |
+| 4 | `packages/openclaw` | `MnemosyneMemory` OpenClaw adapter | 0G Track 1 | |
+| 5 | `packages/contracts` | `StakeVault` + `MnemosyneRegistry` + ERC-7857 iNFT | 0G iNFT | |
+| 6 | `packages/contracts` | `ChallengeManager` + `ValidatorRegistry` | — | |
+| 7 | `packages/contracts` | `RoyaltyVault` | Uniswap | |
+| 8 | `packages/identity` | ENS subname, `memory.index` + `payment.token` text records | ENS | |
+| 9 | `packages/payments` | Uniswap royalty routing, x402/MPP for KeeperHub | Uniswap + KeeperHub | |
+| 10 | `packages/api` | Query REST endpoint — RAG over 0G entries | — | |
+| 11 | `packages/keepers` | All 6 jobs wired to KeeperHub MCP server | KeeperHub | |
+| 12 | `packages/p2p` | Gensyn AXL — two separate nodes, challenge broadcast + validator coordination | Gensyn | |
+| 13 | `packages/example-agent` | Research agent using Mnemosyne as persistent memory | 0G Track 1 | |
+| 14 | `docs/architecture.png` | Architecture diagram: OpenClaw + 0G Storage/Compute + all sponsors | 0G Track 1 | |
+| 15 | `packages/frontend` | Dashboard: knowledge base explorer, dispute feed, leaderboard, live demo | All | |
 
 **Phases 1–2 complete. Next: Phase 3 — `packages/compute`.**
