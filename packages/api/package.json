@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@mnemosyne/compute": "workspace:*",
+    "@mnemosyne/identity": "workspace:*",
     "@mnemosyne/storage": "workspace:*",
     "@mnemosyne/types": "workspace:*",
     "cors": "2.8.6",

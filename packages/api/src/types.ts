@@ -11,6 +11,8 @@ export interface StoreResponse {
   entryId: string
   storageRef: string
   embeddingRef: string
+  /** Set when submittedBy is an ENS name and ENS_PRIVATE_KEY is configured. */
+  manifestRef?: string
 }
 
 export interface QueryRequest {

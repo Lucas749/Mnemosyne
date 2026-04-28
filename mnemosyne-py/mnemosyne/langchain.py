@@ -1,36 +1,26 @@
-"""LangChain BaseMemory adapter for Mnemosyne."""
+"""LangChain memory adapter for Mnemosyne (compatible with langchain-core v1+)."""
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from langchain_core.memory import BaseMemory
-from langchain_core.messages import AIMessage, HumanMessage, get_buffer_string
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from .client import MnemosyneClient
 
 
-class MnemosyneMemory(BaseMemory):
+class MnemosyneMemory(BaseModel):
     """
-    LangChain memory that stores and retrieves via Mnemosyne's decentralized 0G backend.
+    LangChain-compatible memory that stores and retrieves via Mnemosyne.
 
-    Usage::
+    Drop-in for chains that accept a memory= kwarg::
 
-        from mnemosyne import MnemosyneMemory
-        from langchain.chat_models import ChatOpenAI
-        from langchain.chains import ConversationChain
-
+        from mnemosyne.langchain import MnemosyneMemory
         memory = MnemosyneMemory(
             api_url="http://localhost:3000",
             submitted_by="my-agent.mnemosyne.eth",
-            top_k=5,
-            similarity_threshold=0.5,
         )
-        chain = ConversationChain(llm=ChatOpenAI(), memory=memory)
-        chain.predict(input="What do you know about the Ethereum merge?")
     """
 
-    # pydantic fields
     api_url: Optional[str] = Field(default=None)
     submitted_by: Optional[str] = Field(default=None)
     top_k: int = Field(default=5)
@@ -88,9 +78,9 @@ class MnemosyneMemory(BaseMemory):
         # Mnemosyne entries are immutable — clearing local state only
         pass
 
-    def load_from_ens(self, manifest_ref: str) -> int:
-        """Bootstrap memory from another agent's 0G manifest (resolved from ENS memory.index)."""
-        return self.client.load_manifest(manifest_ref)
+    def load_from_ens(self, ens_name: str) -> dict:
+        """Bootstrap memory by resolving an ENS name via the API."""
+        return self.client.load_from_ens(ens_name)
 
     # ─── helpers ─────────────────────────────────────────────────────────────
 

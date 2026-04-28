@@ -8,9 +8,11 @@ import {
   downloadEntryBlob,
   downloadEmbeddingBlob,
   downloadManifest,
+  addEntryToManifest,
   activeEntries,
 } from '@mnemosyne/storage'
-import type { EntryBlob, EmbeddingBlob } from '@mnemosyne/types'
+import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
+import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
 import type { StorageClient } from '@mnemosyne/storage'
 import type { StoreRequest, StoreResponse, QueryRequest, QueryResponse } from './types.js'
@@ -51,10 +53,10 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   // ─── POST /store ─────────────────────────────────────────────────────────
 
   app.post('/store', async (req, res) => {
-    const body = req.body as StoreRequest
-    const entryId    = '0x' + randomBytes(16).toString('hex')
-    const domain     = body.domain ?? 'factual'
-    const tags       = body.tags ?? []
+    const body        = req.body as StoreRequest
+    const entryId     = '0x' + randomBytes(16).toString('hex')
+    const domain      = body.domain ?? 'factual'
+    const tags        = body.tags ?? []
     const submittedBy = body.submittedBy ?? 'agent'
 
     const blob: EntryBlob = {
@@ -82,9 +84,27 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     })
 
     // TODO: call MnemosyneRegistry.submit() on-chain so entry is staked (requires deployed contract addresses)
-    // TODO: call setMemoryIndex() from packages/identity to update ENS memory.index after storing
 
-    const out: StoreResponse = { entryId, storageRef, embeddingRef }
+    // When submittedBy is an ENS name, update memory.index with a manifest
+    // that includes this entry so other agents can discover it via ENS.
+    let manifestRef: string | undefined
+    const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
+    if (submittedBy.endsWith('.eth') && ensKey) {
+      const currentRef = await getMemoryIndex(submittedBy).catch(() => null)
+      const entry: ManifestEntry = {
+        entryId,
+        storageRef,
+        embeddingRef,
+        domain: domain as any,
+        tags,
+        status: 'active',
+        addedAt: Math.floor(Date.now() / 1000),
+      }
+      manifestRef = await addEntryToManifest(storage, currentRef, submittedBy, entry)
+      await setMemoryIndex(ensKey, submittedBy, manifestRef)
+    }
+
+    const out: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef }
     res.json(out)
   })
 
@@ -127,7 +147,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   })
 
   // ─── POST /load-manifest ─────────────────────────────────────────────────
-  // Seed the in-memory cache from a 0G manifest (identified by ENS → memory.index)
+  // Seed the in-memory cache from a 0G manifest ref directly.
 
   app.post('/load-manifest', async (req, res) => {
     const { manifestRef } = req.body as { manifestRef: string }
@@ -151,6 +171,42 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     )
 
     res.json({ loaded: active.length, total: cache.size })
+  })
+
+  // ─── GET /load-from-ens/:ensName ─────────────────────────────────────────
+  // Resolve an ENS name → read memory.index → load its manifest into the cache.
+  // This is the discovery endpoint: agent B bootstraps its knowledge from agent A
+  // simply by calling GET /load-from-ens/agentA.eth
+
+  app.get('/load-from-ens/:ensName', async (req, res) => {
+    const ensName    = req.params.ensName
+    const manifestRef = await getMemoryIndex(ensName)
+
+    if (!manifestRef) {
+      res.status(404).json({ error: `No memory.index found for ${ensName}` })
+      return
+    }
+
+    const manifest = await downloadManifest(storage, manifestRef)
+    const active   = activeEntries(manifest)
+
+    await Promise.all(
+      active.map(async (entry) => {
+        const [embBlob, entryBlob] = await Promise.all([
+          downloadEmbeddingBlob(storage, entry.embeddingRef),
+          downloadEntryBlob(storage, entry.storageRef),
+        ])
+        cache.set(entry.entryId, {
+          content: entryBlob.content,
+          vector: embBlob.vector,
+          storageRef: entry.storageRef,
+          tags: entry.tags,
+          domain: entry.domain,
+        })
+      }),
+    )
+
+    res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
   })
 
   return app

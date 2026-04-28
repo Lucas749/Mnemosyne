@@ -92,6 +92,19 @@ class MnemosyneClient:
         resp.raise_for_status()
         return resp.json().get("loaded", 0)
 
+    def load_from_ens(self, ens_name: str) -> dict:
+        """
+        Resolve an ENS name → read memory.index → load that agent's knowledge
+        into the API cache. Returns {"loaded": int, "total": int, "manifestRef": str}.
+        Raises requests.HTTPError with 404 if the name has no memory.index set.
+        """
+        resp = self._session.get(
+            f"{self.api_url}/load-from-ens/{ens_name}",
+            timeout=120,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def health(self) -> dict:
         resp = self._session.get(f"{self.api_url}/health", timeout=10)
         resp.raise_for_status()

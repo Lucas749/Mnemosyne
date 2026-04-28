@@ -1,4 +1,6 @@
 from .client import MnemosyneClient
-from .langchain import MnemosyneMemory
 
-__all__ = ["MnemosyneClient", "MnemosyneMemory"]
+# MnemosyneMemory requires langchain — import explicitly:
+#   from mnemosyne.langchain import MnemosyneMemory
+
+__all__ = ["MnemosyneClient"]

@@ -3,7 +3,17 @@
   "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "dependencies": {
-    "@mnemosyne/types": "workspace:*"
+    "@ensdomains/ensjs": "^4.2.2",
+    "@mnemosyne/types": "workspace:*",
+    "viem": "^2.48.4"
+  },
+  "devDependencies": {
+    "dotenv": "^16.0.0",
+    "vitest": "^1.0.0"
   }
 }
