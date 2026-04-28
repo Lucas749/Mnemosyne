@@ -4,22 +4,23 @@ export interface StoreRequest {
   content: string
   domain?: EntryDomain
   tags?: string[]
-  submittedBy?: string   // ENS name or identifier
+  submittedBy?: string
 }
 
 export interface StoreResponse {
   entryId: string
   storageRef: string
   embeddingRef: string
-  /** Set when submittedBy is an ENS name and ENS_PRIVATE_KEY is configured. */
   manifestRef?: string
+  /** On-chain bytes32 entryId from MnemosyneRegistry (set when ZG_PRIVATE_KEY is configured). */
+  onchainId?: string
 }
 
 export interface QueryRequest {
   text: string
   topK?: number
   domains?: EntryDomain[]
-  scope?: string          // ENS name to scope to one agent's memory
+  scope?: string
 }
 
 export interface QueryMatch {
@@ -29,6 +30,7 @@ export interface QueryMatch {
   storageRef: string
   tags: string[]
   domain?: EntryDomain
+  submittedBy?: string
 }
 
 export interface QueryResponse {

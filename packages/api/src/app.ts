@@ -12,7 +12,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { routeRoyalty } from '@mnemosyne/payments'
+import { submitOnChain, depositQueryFeeOnChain } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
 import type { StorageClient } from '@mnemosyne/storage'
@@ -25,15 +25,16 @@ interface CachedEntry {
   tags: string[]
   domain?: string
   submittedBy?: string
+  submitterAddress?: `0x${string}` // wallet address for on-chain royalty routing
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
-  if (a.length !== b.length) throw new Error('Vector dimension mismatch')
+  const len = Math.min(a.length, b.length)
   let dot = 0, normA = 0, normB = 0
-  for (let i = 0; i < a.length; i++) {
-    dot   += a[i]! * b[i]!
-    normA += a[i]! * a[i]!
-    normB += b[i]! * b[i]!
+  for (let i = 0; i < len; i++) {
+    dot   += (a[i] ?? 0) * (b[i] ?? 0)
+    normA += (a[i] ?? 0) ** 2
+    normB += (b[i] ?? 0) ** 2
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB)
   return denom === 0 ? 0 : dot / denom
@@ -77,6 +78,12 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     const embBlob      = await generateEmbedding(compute, entryId, body.content)
     const embeddingRef = await uploadEmbeddingBlob(storage, embBlob)
 
+    // Submit on-chain (non-blocking) — stakes MIN_STAKE, mints pending iNFT
+    let onchainId: `0x${string}` | undefined
+    submitOnChain(storageRef, embeddingRef, tags, domain)
+      .then(id => { if (id) onchainId = id })
+      .catch(() => {}) // non-blocking — chain failures must not break storage
+
     cache.set(entryId, {
       content: body.content,
       vector: embBlob.vector,
@@ -86,10 +93,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       submittedBy,
     })
 
-    // TODO: call MnemosyneRegistry.submit() on-chain so entry is staked (requires deployed contract addresses)
-
     // When submittedBy is an ENS name, update memory.index with a manifest
-    // that includes this entry so other agents can discover it via ENS.
+    // so other agents can discover this entry via ENS.
     let manifestRef: string | undefined
     const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
     if (submittedBy.endsWith('.eth') && ensKey) {
@@ -107,20 +112,19 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       await setMemoryIndex(ensKey, submittedBy, manifestRef)
     }
 
-    const out: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef }
+    const out: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef, onchainId }
     res.json(out)
   })
 
   // ─── POST /query ─────────────────────────────────────────────────────────
 
   app.post('/query', async (req, res) => {
-    const body   = req.body as QueryRequest
-    const topK   = body.topK ?? 5
+    const body    = req.body as QueryRequest
+    const topK    = body.topK ?? 5
     const domains = body.domains
 
     if (cache.size === 0) {
-      const out: QueryResponse = { matches: [] }
-      res.json(out)
+      res.json({ matches: [] } as QueryResponse)
       return
     }
 
@@ -140,22 +144,19 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         tags: e.tags,
         domain: e.domain as any,
         submittedBy: e.submittedBy,
+        submitterAddress: e.submitterAddress,
       }))
       .sort((a, b) => b.similarity - a.similarity)
       .slice(0, topK)
 
-    // Fire-and-forget micro-royalty payments via Uniswap if configured
-    const royaltyKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
-    if (royaltyKey) {
-      const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000') // 0.001 ETH default
-      for (const match of matches) {
-        if (match.submittedBy?.endsWith('.eth')) {
-          routeRoyalty(royaltyKey, match.submittedBy, royaltyWei, {
-            ensRpcUrl: process.env.SEPOLIA_RPC,
-          }).catch(() => {}) // non-blocking; payment failures must not break queries
-        }
-      }
-    }
+    // Deposit query fee into RoyaltyVault on-chain (non-blocking).
+    // Keeper will later call distribute() → routes via Uniswap to contributor's preferred token.
+    const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000') // 0.001 A0GI
+    const contributors = matches
+      .map(m => m.submitterAddress)
+      .filter((a): a is `0x${string}` => !!a)
+    depositQueryFeeOnChain(contributors, royaltyWei * BigInt(matches.length))
+      .catch(() => {}) // non-blocking
 
     const out: QueryResponse = { matches }
     res.json(out)
@@ -190,11 +191,10 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
   // ─── GET /load-from-ens/:ensName ─────────────────────────────────────────
   // Resolve an ENS name → read memory.index → load its manifest into the cache.
-  // This is the discovery endpoint: agent B bootstraps its knowledge from agent A
-  // simply by calling GET /load-from-ens/agentA.eth
+  // Agent B bootstraps knowledge from agent A by calling GET /load-from-ens/agentA.eth
 
   app.get('/load-from-ens/:ensName', async (req, res) => {
-    const ensName    = req.params.ensName
+    const ensName     = req.params.ensName
     const manifestRef = await getMemoryIndex(ensName)
 
     if (!manifestRef) {
@@ -219,6 +219,10 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
           domain: entry.domain,
           submittedBy: ensName,
         })
+      }),
+    )
+
+    res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
   })
 
   return app

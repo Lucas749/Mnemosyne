@@ -35,6 +35,9 @@ importers:
       express:
         specifier: 5.2.1
         version: 5.2.1
+      viem:
+        specifier: ^2.48.4
+        version: 2.48.4(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@5.0.10)
     devDependencies:
       '@types/cors':
         specifier: 2.8.19
