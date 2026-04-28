@@ -1,2 +1,2 @@
-// Query REST API — RAG over 0G entries — Phase 2
-export {}
+export { createMnemosyneApp } from './app.js'
+export type { StoreRequest, QueryRequest, StoreResponse, QueryResponse } from './types.js'

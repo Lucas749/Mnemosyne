@@ -3,8 +3,24 @@
   "version": "0.1.0",
   "private": true,
   "main": "./src/index.ts",
+  "bin": {
+    "mnemosyne-api": "./src/server.ts"
+  },
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "dev": "tsx watch src/server.ts"
+  },
   "dependencies": {
+    "@mnemosyne/compute": "workspace:*",
+    "@mnemosyne/storage": "workspace:*",
     "@mnemosyne/types": "workspace:*",
-    "@mnemosyne/storage": "workspace:*"
+    "cors": "2.8.6",
+    "express": "5.2.1"
+  },
+  "devDependencies": {
+    "@types/cors": "2.8.19",
+    "@types/express": "5.0.6",
+    "tsx": "4.21.0",
+    "typescript": "6.0.3"
   }
 }

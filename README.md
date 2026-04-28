@@ -1,212 +1,289 @@
 # Mnemosyne
 
-**The crowdsourced, decentralized dataset where accurate data earns and wrong data gets destroyed.**
+> AI agents no longer forget. Mnemosyne gives them shared, verified, decentralized on-chain memory.
 
-Mnemosyne is a shared knowledge base for AI agents — and anyone else — built on economic skin in the game. Contribute a fact, a labeled example, or a dataset entry. Stake ETH on it. If nobody can prove you wrong, you earn passive royalties every time your data gets queried. Forever. If you're wrong, you get slashed.
+[![Built for OpenAgents Hackathon](https://img.shields.io/badge/OpenAgents-Hackathon-blue)](https://openagents.com)
+[![0G Storage](https://img.shields.io/badge/0G-Storage%20%2B%20Compute-orange)](https://0g.ai)
+[![ENS](https://img.shields.io/badge/ENS-memory.index-purple)](https://ens.domains)
+[![Uniswap](https://img.shields.io/badge/Uniswap-Royalty%20Routing-pink)](https://uniswap.org)
+[![KeeperHub](https://img.shields.io/badge/KeeperHub-6%20Keeper%20Jobs-green)](https://keeperhub.dev)
+[![Gensyn](https://img.shields.io/badge/Gensyn-AXL%20P2P-red)](https://gensyn.ai)
+
+---
+
+## The problem
+
+Every AI agent conversation starts from zero. When an agent figures something out — a verified fact, a hard-won observation, a labeled training example — it evaporates. The next agent starts blind.
+
+When training data does exist, it's opaque: unknown provenance, no incentives for accuracy, no mechanism for removing bad entries. Wikipedia has editors but no economic stakes. Hugging Face has datasets but no quality enforcement. RLHF human labelers are expensive, anonymous, and unaccountable.
+
+**There is no open, trustless, self-cleaning data layer for the AI economy.**
+
+---
+
+## What Mnemosyne is
+
+A crowdsourced, decentralized knowledge base for AI agents — built on economic skin in the game.
+
+- **Submit** a fact, observation, or labeled data point. Stake ETH on it.
+- **Survive** a 48-hour challenge window unchallenged → entry goes active. You start earning.
+- **Earn** passive royalties every time your entry is queried by any agent, forever.
+- **Get challenged** → a validator panel evaluates it. Wrong data gets slashed and burned.
+- **Query** with semantic search. Pay a micropayment. The fee splits to all authors who helped.
 
 No editors. No gatekeepers. No central authority. The market decides what's true.
 
 ---
 
-## The Problem
+## Live demo
 
-AI agents have no shared memory. Every conversation starts from zero. When an agent learns something useful — a verified fact, a labeled data point, a hard-won observation — it disappears. The next agent starts blind.
+### Try it yourself
 
-Worse: when training data does exist, nobody knows who owns it, who profits from it being used, or whether it's accurate. Wikipedia has editors but no incentives. Hugging Face has datasets but no quality enforcement. RLHF has human labelers but they're expensive, opaque, and unaccountable.
+```bash
+# Start the memory API
+cd packages/api && pnpm start
 
-There is no open, trustless, self-cleaning data layer for the AI economy. Mnemosyne is that layer.
+# Ask the agent something it doesn't know yet
+python mnemosyne-py/example_agent.py
+> "What happened during the Ethereum merge?"
 
----
+# The agent finds nothing in memory, researches, and stores:
+# → POST /store { content: "Ethereum switched to PoS on Sep 15, 2022", domain: "factual" }
 
-## How It Works
+# Now ask again — even in a brand new session
+> "When did Ethereum switch to proof of stake?"
 
-### 1. Contribute
+# → Agent recalls from Mnemosyne: "I have a verified memory: Ethereum merged on Sep 15, 2022"
+#   (stored on 0G, retrieved via cosine similarity, TEE-attested)
+```
 
-Anyone — human or AI agent — submits an entry to the knowledge base: a fact, a labeled example, a structured dataset row, an observation. You stake ETH alongside your submission. The stake locks for a **48-hour challenge window**.
+Open [http://localhost:4000](http://localhost:4000) to browse the knowledge base, see who posted each entry, view stakes, and challenge anything you think is wrong.
 
-If the window closes with no challenge, your entry is accepted into the knowledge base. You start earning.
+### Adding knowledge from the frontend
 
-### 2. Earn
-
-Accepted entries generate two passive income streams:
-
-- **Query royalties** — every time an agent queries the knowledge base and your entry helps answer it, you earn a Uniswap micropayment proportional to your entry's contribution
-- **Survival bonus** — KeeperHub's Royalty Distributor pays periodic bonuses to long-lived, frequently-queried entries
-
-Good data compounds. The longer your entry survives and the more it gets used, the more it earns.
-
-### 3. Challenge
-
-Any agent can challenge an entry it believes is wrong. The challenger stakes ETH to open a dispute. A panel of **Validator agents** — randomly sampled, weighted by ENS reputation — evaluates the claim. Validators also stake. If they vote with the minority, they lose stake too.
-
-**Resolution:**
-- Entry upheld → Challenger slashed. Contributor earns challenger's stake. Royalties continue.
-- Entry overturned → Contributor slashed. Challenger earns contributor's stake. Entry burned.
-
-### 4. Query
-
-Agents pay a micropayment (Uniswap) per query. The fee splits across all entries that contributed to the answer. Bad entries that nobody queries slowly go stale and expire. The most useful data rises to the top automatically.
+1. Connect wallet → get ENS subname under `mnemosyne.eth`
+2. Submit entry → stake 0.005+ ETH → 48-hour window opens
+3. Any agent or user can now query it and **immediately see it in the brain**
+4. Watch the agent answer questions using your entry in real time
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                      Contributors                        │
-│              (humans, agents, pipelines)                 │
-└────────────────────────┬────────────────────────────────┘
-                         │ stake + submit entry
-                         ▼
-┌─────────────────────────────────────────────────────────┐
-│                    0G Storage Layer                      │
-│   All entries, metadata, stakes, query logs stored here  │
-│   Entries are iNFTs — owned, transferable, burnable      │
-└────────┬───────────────┬───────────────┬────────────────┘
-         │               │               │
-         ▼               ▼               ▼
-  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐
-  │  Challenge  │ │   Query     │ │   Keeper Network     │
-  │  via AXL   │ │  via AXL   │ │   (KeeperHub)        │
-  └──────┬──────┘ └──────┬──────┘ └──────────┬──────────┘
-         │               │                   │
-         ▼               ▼                   ▼
-  ┌─────────────┐ ┌─────────────┐ ┌─────────────────────┐
-  │  Validator  │ │  Royalty    │ │  Challenge Watcher   │
-  │  Panel      │ │  Split      │ │  Staleness Reaper    │
-  │  (ENS-      │ │  (Uniswap)  │ │  Quorum Enforcer     │
-  │  weighted)  │ │             │ │  Reputation Auditor  │
-  └─────────────┘ └─────────────┘ │  Royalty Distributor │
-                                  │  Entry Health Monitor│
-                                  └─────────────────────┘
+ Agents / Humans
+       │
+       │ stake + submit
+       ▼
+ ┌─────────────────────────────────────────────────────────┐
+ │               MnemosyneRegistry.sol                      │
+ │   pending → active → contested → stale → burned         │
+ │   ERC-7857 iNFT minted on activation                    │
+ └───────────┬───────────────────┬───────────────┬─────────┘
+             │                   │               │
+             ▼                   ▼               ▼
+       StakeVault.sol    ChallengeManager.sol  RoyaltyVault.sol
+       (lock/slash/      (open → vote →        (query fees →
+        release)          resolve)              Uniswap swap)
+             │                   │
+             ▼                   ▼
+       ValidatorRegistry.sol     │
+       (tier: bronze→expert      │
+        ENS reputation weight)   │
+                                 │
+             ┌───────────────────┘
+             ▼
+    0G Storage (content blobs + embedding vectors as iNFTs)
+    0G Compute (Qwen 2.5 7B — embedding + TEE-attested challenge verdict)
+             │
+             ▼
+    ENS memory.index text record → manifest of all active entries
+             │
+             ▼
+    Mnemosyne REST API  ←──── OpenClaw agents (SKILL.md)
+    (packages/api)      ←──── Python agents (LangChain / LlamaIndex)
+             │
+             ▼
+    KeeperHub (6 keeper jobs — fully autonomous, zero human trigger)
+    Gensyn AXL (P2P encrypted validator coordination)
 ```
 
 ---
 
-## The Keeper Network
+## How agents use it
 
-KeeperHub runs a **persistent keeper agent network** — the autonomous nervous system of Mnemosyne. No human ever needs to trigger anything. Keepers watch the knowledge base 24/7 and fire the moment conditions are met.
+### OpenClaw (any OS, any messaging platform)
 
-| Keeper | Watches | Fires When | Action |
-|---|---|---|---|
-| **Challenge Watcher** | All open disputes | Challenge window expires | Tallies votes, executes slash/reward via Uniswap, updates ENS reputation |
-| **Staleness Reaper** | Entry query timestamps | Entry unqueried for N days | Marks stale, notifies author, starts 24h expiry grace period |
-| **Royalty Distributor** | Query fee pool | Pool crosses threshold | Distributes earnings to authors proportional to query share |
-| **Quorum Enforcer** | Mid-dispute validator panels | No quorum within 12h | Recruits more validators via AXL broadcast, escalates stakes |
-| **Reputation Auditor** | Validator win/loss records | Accuracy drops below 60% | Demotes ENS reputation tier, reduces panel selection weight |
-| **Entry Health Monitor** | All entries | 3+ unresolved challenges | Flags entry as "contested", removes from query results until resolved |
+Install the Mnemosyne skill into your OpenClaw agent:
 
-The full lifecycle — dispute open → validators recruited → vote tallied → slash executed → reputation updated → entry expired — runs with zero human intervention.
+```bash
+cp -r packages/openclaw ~/.openclaw/workspace/skills/mnemosyne
+```
+
+Your agent now has persistent, decentralized memory. It will call `POST /store` when it learns something worth keeping, and `POST /query` before answering any question — retrieving verified facts from the global knowledge base.
+
+### Python — LangChain
+
+```python
+from mnemosyne import MnemosyneMemory
+from langchain.chains import ConversationChain
+from langchain_openai import ChatOpenAI
+
+memory = MnemosyneMemory(
+    api_url="http://localhost:3000",
+    submitted_by="my-agent.mnemosyne.eth",
+)
+chain = ConversationChain(llm=ChatOpenAI(), memory=memory)
+```
+
+### Python — LlamaIndex
+
+```python
+from mnemosyne.llamaindex import MnemosyneChatStore
+from llama_index.core.memory import ChatMemoryBuffer
+
+store = MnemosyneChatStore(api_url="http://localhost:3000")
+memory = ChatMemoryBuffer.from_defaults(chat_store=store, token_limit=3000)
+```
+
+### TypeScript / Node
+
+```typescript
+import { MnemosyneMemory } from '@mnemosyne/openclaw'
+import { createComputeClient } from '@mnemosyne/compute'
+import { createStorageClient } from '@mnemosyne/storage'
+
+const memory = new MnemosyneMemory(computeClient, storageClient)
+await memory.store('Ethereum merged on Sep 15 2022', { domain: 'factual', tags: ['ethereum'] })
+const hits = await memory.query('when did Ethereum switch to PoS?', 5)
+```
 
 ---
 
-## Identity Layer (ENS)
+## The knowledge economy
 
-Every participant in Mnemosyne has an ENS identity. This isn't cosmetic — it's the reputation system.
+```
+You submit a verified fact
+    │
+    ├─ No challenge in 48h ──► Entry goes ACTIVE
+    │                           ERC-7857 iNFT minted for you
+    │                           You earn query royalties forever
+    │                           Survival bonus after 7 days
+    │
+    └─ Challenge opens ────► Validator panel samples (ENS reputation weighted)
+                             AI-assisted verdict from 0G Compute (TEE-attested)
+                             │
+                             ├─ Entry UPHELD ─► Challenger slashed → you earn
+                             │
+                             └─ Entry OVERTURNED ─► You slashed → iNFT burned
 
-- **Contributors** register under a domain that signals their specialty: `medical.mnemosyne.eth`, `defi-data.mnemosyne.eth`
-- **Validators** carry their accuracy rate, domain expertise, and panel history in ENS text records
-- **Reputation tier** (set by the Keeper Auditor) determines how often a validator is selected for panels and how much their vote is weighted
-- **Entry authorship** is permanently tied to an ENS name — your track record follows you
+You challenge a bad entry
+    │
+    ├─ Entry OVERTURNED ──► You earn contributor's stake + reputation boost
+    │
+    └─ Entry UPHELD ──────► You get slashed + reputation drop
+```
 
-A validator who consistently votes correctly becomes more influential and earns more. A bad actor who challenges valid entries loses stake and gets demoted. ENS makes the whole reputation system transparent and portable.
+The incentive structure self-cleans. Nobody coordinates this — it emerges from the economics.
 
 ---
 
-## Why Each Sponsor
+## Keeper network (KeeperHub)
 
-| Sponsor | Role |
+Six persistent keeper jobs automate the entire lifecycle. No human ever needs to trigger anything.
+
+| Keeper | Fires when | Action |
+|---|---|---|
+| **Challenge Watcher** | Challenge window expires | Activates pending entries, mints iNFTs, resolves disputes |
+| **Staleness Reaper** | Entry unqueried for 30 days | Marks stale, starts 24h grace period before burn |
+| **Royalty Distributor** | Fee pool > 0.1 ETH | Routes payouts via Uniswap to contributor's preferred token |
+| **Quorum Enforcer** | 12h without validator quorum | Recruits more validators via Gensyn AXL broadcast |
+| **Reputation Auditor** | Validator accuracy < 60% | Demotes ENS tier, reduces panel selection weight |
+| **Entry Health Monitor** | 3+ open challenges | Marks contested, removes from query results |
+
+---
+
+## Identity (ENS)
+
+Every participant gets an ENS subname under `mnemosyne.eth`. This is not cosmetic — it's the trust layer.
+
+`memory.index` text record → points to 0G manifest of all active entries. Any agent can resolve `analyst.mnemosyne.eth`, read `memory.index`, and instantly load that agent's entire verified memory.
+
+`payment.token` text record → contributor's preferred payout token. Uniswap routes royalties to whatever token they want.
+
+---
+
+## Sponsor integrations
+
+| Sponsor | Integration |
 |---|---|
-| **0G** | All entries stored on 0G Storage as iNFTs — owned, permanent, auditable. Training receipts and provenance chains live here. The knowledge graph IS a 0G dataset. |
-| **Uniswap** | Query micropayments, stake deposits, slash distributions, royalty flows, survival bonuses — every economic action settles via Uniswap. |
-| **Gensyn AXL** | Dispute broadcasts, validator panel coordination, query routing, quorum escalation — all P2P across AXL nodes. No centralized message broker. |
-| **ENS** | Contributor and validator identities. Reputation tiers and accuracy scores stored in text records. The trust layer for the entire system. |
-| **KeeperHub** | Persistent keeper network that makes the system self-governing. Six always-on agents handle dispute resolution, royalty distribution, reputation management, and data hygiene automatically. |
+| **0G Storage** | All entry blobs, embedding vectors, manifests, and challenge evidence stored as permanent content-addressed 0G blobs |
+| **0G Compute** | Qwen 2.5 7B for embedding generation and TEE-attested challenge verdicts via `processResponse()` |
+| **0G iNFT (ERC-7857)** | Every active entry minted as an ERC-7857 iNFT — transferable ownership, burned on overturn |
+| **Uniswap v3** | Royalty routing via SwapRouter02 — ETH → contributor's preferred token on every payout |
+| **ENS** | `memory.index` and `payment.token` text records; subnames under `mnemosyne.eth`; reputation tiers |
+| **KeeperHub** | 6 persistent keeper jobs wired via KeeperHub MCP server |
+| **Gensyn AXL** | P2P encrypted validator panel coordination, quorum escalation, challenge broadcasts |
 
 ---
 
-## The Data Economy This Creates
+## Repo structure
 
 ```
-Contributor submits data
-        │
-        ├─ Survives challenge window ──► earns query royalties forever
-        │                                earns survival bonuses
-        │                                entry appreciates in value
-        │
-        └─ Gets overturned ──────────► stake slashed
-                                        entry burned
-                                        reputation drops
-
-Challenger finds bad data
-        │
-        ├─ Challenge upheld ─────────► earns contributor's stake
-        │                              earns reputation boost
-        │
-        └─ Challenge fails ──────────► stake slashed
-                                        reputation drops
-```
-
-The incentive structure self-cleans the dataset. Contributors are motivated to only submit what they're confident in. Challengers are motivated to actively find bad entries. Validators are motivated to vote honestly. Nobody coordinates this — it emerges from the economics.
-
----
-
-## What Gets Stored
-
-Mnemosyne is domain-agnostic. Entries can be:
-
-- **Facts and claims** — verifiable statements with source references
-- **Labeled examples** — `(input, label)` pairs for ML training
-- **Structured data** — rows in a schema, API responses, market data snapshots
-- **Observations** — agent-generated insights from real-world interactions
-- **Corrections** — updates to existing entries (which trigger a mini-challenge cycle)
-
-Over time, the knowledge base becomes a **living, crowd-built training dataset** that any AI pipeline can query and pay for — with full provenance of who contributed what and when.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|---|---|
-| Storage | 0G Storage SDK — entries as iNFTs |
-| P2P Messaging | Gensyn AXL — one node per validator/keeper agent |
-| Payments | Uniswap v3 — all economic flows |
-| Identity | ENS SDK — subnames + text records |
-| Automation | KeeperHub — 6 persistent keeper jobs |
-| Frontend | Next.js + wagmi + viem |
-| Agent runtime | Python + claude-sdk |
-
----
-
-## Repo Structure
-
-```
-mnemosyne/
-├── contracts/          # Staking, slash, royalty distribution
-├── agents/
-│   ├── contributor/    # Entry submission agent
-│   ├── challenger/     # Challenge detection + submission
-│   ├── validator/      # Panel voting agent
-│   └── keepers/        # 6 KeeperHub keeper agents
-├── storage/            # 0G Storage integration + iNFT minting
-├── identity/           # ENS subname registration + text record management
-├── payments/           # Uniswap swap + micropayment routing
-├── p2p/                # Gensyn AXL node setup + message protocol
-└── frontend/           # Dashboard: knowledge base explorer, dispute tracker, leaderboard
+OpenAgents/
+├── packages/
+│   ├── contracts/          ✅ Solidity (Foundry) — 14/14 tests passing
+│   │   ├── StakeVault.sol
+│   │   ├── MnemosyneRegistry.sol  (+ ERC-7857 iNFT)
+│   │   ├── ChallengeManager.sol
+│   │   ├── ValidatorRegistry.sol
+│   │   └── RoyaltyVault.sol
+│   │
+│   ├── storage/            ✅ 0G Storage SDK — upload/download blobs + manifests
+│   ├── compute/            ✅ 0G Compute — Qwen embedding + TEE-attested verification
+│   ├── openclaw/           ✅ OpenClaw SKILL.md + TypeScript MemoryAdapter
+│   ├── api/                ✅ REST API — POST /store, POST /query, POST /load-manifest
+│   │
+│   ├── identity/           🔲 Phase 8 — ENS subnames + memory.index text records
+│   ├── payments/           🔲 Phase 9 — Uniswap v3 royalty routing
+│   ├── keepers/            🔲 Phase 11 — 6 KeeperHub jobs
+│   ├── p2p/                🔲 Phase 12 — Gensyn AXL nodes
+│   ├── example-agent/      🔲 Phase 13 — Research agent demo
+│   └── frontend/           🔲 Phase 15 — Knowledge base explorer
+│
+├── mnemosyne-py/           ✅ Python — LangChain + LlamaIndex adapters
+├── shared/types/           ✅ All TypeScript types
+└── docs/                   🔲 Architecture diagram
 ```
 
 ---
 
-## Demo Flow
+## Running locally
 
-1. Contributor submits a labeled entry: `("The sky is blue", label: "factual")` — stakes 0.01 ETH
-2. 48-hour challenge window opens — Keeper Challenge Watcher begins monitoring
-3. A challenger disputes the label — stakes 0.01 ETH, opens dispute on AXL
-4. Validator panel (3 agents sampled by ENS reputation) votes via AXL
-5. Panel reaches quorum: entry upheld
-6. Challenger slashed via Uniswap — contributor earns
-7. Entry enters the knowledge base on 0G — starts earning query royalties
-8. Three days later: Staleness Reaper notices low query volume — sends stale warning
-9. Entry gets queried again — royalty splits to contributor automatically
-10. Reputation Auditor updates all validator ENS text records after the round
+```bash
+# Prerequisites: Node 20+, pnpm, Python 3.10+, Foundry
+
+# Install
+pnpm install
+pip install -e mnemosyne-py
+
+# Set env
+cp .env.example .env
+# edit .env — add ZG_PRIVATE_KEY
+
+# Run contracts tests
+cd packages/contracts && forge test
+
+# Start the memory API
+cd packages/api && pnpm start
+
+# Run the Python agent demo
+python mnemosyne-py/example_agent.py
+
+# Frontend (coming in Phase 15)
+cd packages/frontend && pnpm dev
+```
+
+---
+
+*Built for the OpenAgents Hackathon — targeting 0G, Uniswap, ENS, KeeperHub, and Gensyn prize tracks.*

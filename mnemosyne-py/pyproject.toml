@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "mnemosyne-memory"
+version = "0.1.0"
+description = "Decentralized AI agent memory on 0G Storage — LangChain, LlamaIndex, and AutoGen adapter"
+requires-python = ">=3.10"
+dependencies = [
+  "requests>=2.31.0",
+  "langchain-core>=0.3.0",
+]
+
+[project.optional-dependencies]
+langchain = ["langchain>=0.3.0"]
+llamaindex = ["llama-index-core>=0.10.0"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["mnemosyne*"]
