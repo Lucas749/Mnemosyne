@@ -33,7 +33,7 @@ class MnemosyneClient:
         api_url: Optional[str] = None,
         submitted_by: Optional[str] = None,
     ) -> None:
-        self.api_url = (api_url or os.environ.get("MNEMOSYNE_API_URL", "http://localhost:3000")).rstrip("/")
+        self.api_url = (api_url or os.environ.get("MNEMOSYNE_API_URL", "https://mnemosyne-api-production-7cd6.up.railway.app")).rstrip("/")
         self.submitted_by = submitted_by or os.environ.get("MNEMOSYNE_ENS", "agent")
         self._session = requests.Session()
         self._session.headers.update({"Content-Type": "application/json"})

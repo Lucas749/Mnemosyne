@@ -12,8 +12,6 @@ export interface StoreResponse {
   storageRef: string
   embeddingRef: string
   manifestRef?: string
-  /** On-chain bytes32 entryId from MnemosyneRegistry (set when ZG_PRIVATE_KEY is configured). */
-  onchainId?: string
 }
 
 export interface QueryRequest {

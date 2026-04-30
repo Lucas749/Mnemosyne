@@ -9,9 +9,8 @@ tools:
 <!-- ─────────────────────────────────────────────────────────────────────────
   TODO — Before going to production
 
-  [ ] Replace localhost API URL with hosted endpoint
-        Currently:  http://localhost:3000
-        Replace with: https://api.mnemosyne.eth (or VPS URL once deployed)
+  [x] Replace localhost API URL with hosted endpoint
+        Hosted at: https://mnemosyne-api-production-7cd6.up.railway.app
         Set as env var MNEMOSYNE_API_URL in your OpenClaw config
 
   [ ] Add API auth token once the hosted API requires authentication
@@ -25,7 +24,7 @@ tools:
         from POST /store after every upload (0.005 A0GI stake, 0G testnet chain 16602)
         Contracts: see README.md "Deployed contracts" section
 
-  [ ] Replace localhost in load-from-ens with hosted URL once deployed
+  [x] Replace localhost in load-from-ens with hosted URL — Railway URL is live
 ─────────────────────────────────────────────────────────────────────────── -->
 
 # Mnemosyne Memory
@@ -36,7 +35,7 @@ Mnemosyne is your persistent, decentralized memory layer. Unlike local Markdown 
 
 | Env var | Dev default | Production |
 |---|---|---|
-| `MNEMOSYNE_API_URL` | `http://localhost:3000` | `https://api.mnemosyne.eth` _(TODO: set once hosted)_ |
+| `MNEMOSYNE_API_URL` | `http://localhost:3000` | `https://mnemosyne-api-production-7cd6.up.railway.app` |
 | `MNEMOSYNE_ENS` | `my-agent.mnemosyne.eth` | your registered subname |
 | `MNEMOSYNE_API_TOKEN` | _(not required yet)_ | bearer token _(TODO: add once auth is live)_ |
 
@@ -146,7 +145,7 @@ Below is a realistic transcript of an OpenClaw agent using this skill.
 
 **Agent (step 1 — recall first):**
 ```
-web_fetch POST http://localhost:3000/query
+web_fetch POST https://mnemosyne-api-production-7cd6.up.railway.app/query
 {"text": "Ethereum proof of stake transition date", "topK": 3}
 ```
 
@@ -175,7 +174,7 @@ web_fetch POST http://localhost:3000/query
 
 **Agent:**
 ```
-web_fetch GET http://localhost:3000/load-from-ens/agent.mnemosyne.eth
+web_fetch GET https://mnemosyne-api-production-7cd6.up.railway.app/load-from-ens/agent.mnemosyne.eth
 ```
 
 *Response:*

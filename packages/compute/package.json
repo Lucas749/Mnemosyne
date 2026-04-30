@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@0glabs/0g-serving-broker": "latest",
+    "@huggingface/transformers": "^4.2.0",
     "@mnemosyne/types": "workspace:*",
     "ethers": "6.13.1"
   },

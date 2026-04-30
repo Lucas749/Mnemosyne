@@ -12,7 +12,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
 import type { StorageClient } from '@mnemosyne/storage'
@@ -25,7 +25,18 @@ interface CachedEntry {
   tags: string[]
   domain?: string
   submittedBy?: string
-  submitterAddress?: `0x${string}` // wallet address for on-chain royalty routing
+  submitterAddress?: `0x${string}`
+  onchainEntryId?: `0x${string}`  // bytes32 from EntrySubmitted event
+  challengeWindowEnd?: number      // unix seconds — when activateEntry becomes callable
+  inftTokenId?: bigint             // set once activateEntry is called
+}
+
+type JobStatus = 'pending' | 'done' | 'error'
+interface Job {
+  status: JobStatus
+  result?: unknown
+  error?: string
+  createdAt: number
 }
 
 function cosineSimilarity(a: number[], b: number[]): number {
@@ -48,118 +59,180 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
   // TODO: replace in-memory cache with SQLite — entries are lost on restart
   const cache = new Map<string, CachedEntry>()
+  const jobs  = new Map<string, Job>()
+
+  // Purge jobs older than 10 minutes to avoid unbounded memory growth
+  setInterval(() => {
+    const cutoff = Date.now() - 10 * 60 * 1000
+    for (const [id, job] of jobs) {
+      if (job.createdAt < cutoff) jobs.delete(id)
+    }
+  }, 60_000).unref()
 
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', entries: cache.size })
   })
 
+  // ─── GET /jobs/:jobId ─────────────────────────────────────────────────────
+
+  app.get('/jobs/:jobId', (req, res) => {
+    const job = jobs.get(req.params.jobId)
+    if (!job) { res.status(404).json({ error: 'job not found' }); return }
+    res.json(job)
+  })
+
   // ─── POST /store ─────────────────────────────────────────────────────────
 
-  app.post('/store', async (req, res) => {
+  app.post('/store', (req, res) => {
+    const jobId = '0x' + randomBytes(8).toString('hex')
+    jobs.set(jobId, { status: 'pending', createdAt: Date.now() })
+    res.status(202).json({ jobId })
+
     const body        = req.body as StoreRequest
     const entryId     = '0x' + randomBytes(16).toString('hex')
     const domain      = body.domain ?? 'factual'
     const tags        = body.tags ?? []
     const submittedBy = body.submittedBy ?? 'agent'
 
-    const blob: EntryBlob = {
-      id: entryId,
-      content: body.content,
-      domain,
-      tags,
-      sources: [],
-      submittedBy,
-      submittedAt: Math.floor(Date.now() / 1000),
-      checksum: '',
-    }
+    const JOB_TIMEOUT_MS = 240_000
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('job timed out after 240s — 0G storage unresponsive')), JOB_TIMEOUT_MS)
+    )
 
-    // Sequential to avoid nonce collisions on 0G testnet
-    const storageRef   = await uploadEntryBlob(storage, blob)
-    const embBlob      = await generateEmbedding(compute, entryId, body.content)
-    const embeddingRef = await uploadEmbeddingBlob(storage, embBlob)
-
-    // Submit on-chain (non-blocking) — stakes MIN_STAKE, mints pending iNFT
-    let onchainId: `0x${string}` | undefined
-    submitOnChain(storageRef, embeddingRef, tags, domain)
-      .then(id => { if (id) onchainId = id })
-      .catch(() => {}) // non-blocking — chain failures must not break storage
-
-    cache.set(entryId, {
-      content: body.content,
-      vector: embBlob.vector,
-      storageRef,
-      tags,
-      domain,
-      submittedBy,
-    })
-
-    // When submittedBy is an ENS name, update memory.index with a manifest
-    // so other agents can discover this entry via ENS.
-    let manifestRef: string | undefined
-    const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
-    if (submittedBy.endsWith('.eth') && ensKey) {
-      const currentRef = await getMemoryIndex(submittedBy).catch(() => null)
-      const entry: ManifestEntry = {
-        entryId,
-        storageRef,
-        embeddingRef,
-        domain: domain as any,
+    ;(async () => {
+      const blob: EntryBlob = {
+        id: entryId,
+        content: body.content,
+        domain,
         tags,
-        status: 'active',
-        addedAt: Math.floor(Date.now() / 1000),
+        sources: [],
+        submittedBy,
+        submittedAt: Math.floor(Date.now() / 1000),
+        checksum: '',
       }
-      manifestRef = await addEntryToManifest(storage, currentRef, submittedBy, entry)
-      await setMemoryIndex(ensKey, submittedBy, manifestRef)
-    }
 
-    const out: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef, onchainId }
-    res.json(out)
+      const storageRef   = await Promise.race([uploadEntryBlob(storage, blob), timeout])
+      const embBlob      = await Promise.race([generateEmbedding(compute, entryId, body.content), timeout])
+      const embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
+
+      const onchainEntryId = await submitOnChain(storageRef, embeddingRef, tags, domain).catch(() => null)
+      const CHALLENGE_WINDOW_MS = 5 * 60 * 1000 // matches contract (5 min testnet)
+      const challengeWindowEnd = onchainEntryId
+        ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
+        : undefined
+
+      cache.set(entryId, {
+        content: body.content,
+        vector: embBlob.vector,
+        storageRef,
+        tags,
+        domain,
+        submittedBy,
+        onchainEntryId: onchainEntryId ?? undefined,
+        challengeWindowEnd,
+      })
+
+      let manifestRef: string | undefined
+      const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
+      if (submittedBy.endsWith('.eth') && ensKey) {
+        const currentRef = await getMemoryIndex(submittedBy).catch(() => null)
+        const entry: ManifestEntry = {
+          entryId,
+          storageRef,
+          embeddingRef,
+          domain: domain as any,
+          tags,
+          status: 'active',
+          addedAt: Math.floor(Date.now() / 1000),
+        }
+        manifestRef = await addEntryToManifest(storage, currentRef, submittedBy, entry)
+        setMemoryIndex(ensKey, submittedBy, manifestRef).catch((err) =>
+          console.error('[ens] setMemoryIndex failed:', err?.message ?? err)
+        )
+      }
+
+      const result: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef }
+      jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
+    })().catch((err) => {
+      console.error('[store] job failed:', err?.message ?? err)
+      jobs.set(jobId, { status: 'error', error: err?.message ?? String(err), createdAt: Date.now() })
+    })
   })
 
   // ─── POST /query ─────────────────────────────────────────────────────────
 
-  app.post('/query', async (req, res) => {
+  app.post('/query', (req, res) => {
+    const jobId = '0x' + randomBytes(8).toString('hex')
+    jobs.set(jobId, { status: 'pending', createdAt: Date.now() })
+    res.status(202).json({ jobId })
+
     const body    = req.body as QueryRequest
     const topK    = body.topK ?? 5
     const domains = body.domains
 
     if (cache.size === 0) {
-      res.json({ matches: [] } as QueryResponse)
+      jobs.set(jobId, { status: 'done', result: { matches: [] } as QueryResponse, createdAt: Date.now() })
       return
     }
 
-    const queryEmb = await generateEmbedding(compute, '__query__', body.text)
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('job timed out after 240s — 0G storage unresponsive')), 240_000)
+    )
 
-    let entries = Array.from(cache.entries())
-    if (domains && domains.length > 0) {
-      entries = entries.filter(([, e]) => domains.includes(e.domain as any))
-    }
+    ;(async () => {
+      const queryEmb = await Promise.race([generateEmbedding(compute, '__query__', body.text), timeout])
 
-    const matches = entries
-      .map(([entryId, e]) => ({
-        entryId,
-        content: e.content,
-        similarity: cosineSimilarity(queryEmb.vector, e.vector),
-        storageRef: e.storageRef,
-        tags: e.tags,
-        domain: e.domain as any,
-        submittedBy: e.submittedBy,
-        submitterAddress: e.submitterAddress,
-      }))
-      .sort((a, b) => b.similarity - a.similarity)
-      .slice(0, topK)
+      let entries = Array.from(cache.entries())
+      if (domains && domains.length > 0) {
+        entries = entries.filter(([, e]) => domains.includes(e.domain as any))
+      }
 
-    // Deposit query fee into RoyaltyVault on-chain (non-blocking).
-    // Keeper will later call distribute() → routes via Uniswap to contributor's preferred token.
-    const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000') // 0.001 A0GI
-    const contributors = matches
-      .map(m => m.submitterAddress)
-      .filter((a): a is `0x${string}` => !!a)
-    depositQueryFeeOnChain(contributors, royaltyWei * BigInt(matches.length))
-      .catch(() => {}) // non-blocking
+      const matches = entries
+        .map(([entryId, e]) => ({
+          entryId,
+          content: e.content,
+          similarity: cosineSimilarity(queryEmb.vector, e.vector),
+          storageRef: e.storageRef,
+          tags: e.tags,
+          domain: e.domain as any,
+          submittedBy: e.submittedBy,
+          submitterAddress: e.submitterAddress,
+        }))
+        .sort((a, b) => b.similarity - a.similarity)
+        .slice(0, topK)
 
-    const out: QueryResponse = { matches }
-    res.json(out)
+      const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
+      // Royalties flow to the current iNFT owner, not necessarily the original submitter.
+      // This means buying an iNFT transfers the royalty stream too.
+      const contributorPromises = matches.map(async (m) => {
+        const cached = cache.get(m.entryId)
+        if (cached?.inftTokenId && m.submitterAddress) {
+          return resolveRoyaltyRecipient(cached.inftTokenId, m.submitterAddress)
+        }
+        return m.submitterAddress as `0x${string}` | undefined
+      })
+      const contributors = (await Promise.all(contributorPromises))
+        .filter((a): a is `0x${string}` => !!a)
+      depositQueryFeeOnChain(contributors, royaltyWei * BigInt(matches.length)).catch(() => {})
+
+      // Authorize the API wallet as executor for each matched iNFT — ERC-7857 AIaaS pattern.
+      // Grants read rights without transferring ownership.
+      const operatorAddress = getOperatorAddress()
+      if (operatorAddress) {
+        const permissions = `0x${Buffer.from(JSON.stringify({ expiresAt: Date.now() + 3600_000, query: body.text })).toString('hex')}` as `0x${string}`
+        for (const m of matches) {
+          const cached = cache.get(m.entryId)
+          if (cached?.inftTokenId) {
+            authorizeUsageOnChain(cached.inftTokenId, operatorAddress, permissions).catch(() => {})
+          }
+        }
+      }
+
+      jobs.set(jobId, { status: 'done', result: { matches } as QueryResponse, createdAt: Date.now() })
+    })().catch((err) => {
+      console.error('[query] job failed:', err?.message ?? err)
+      jobs.set(jobId, { status: 'error', error: err?.message ?? String(err), createdAt: Date.now() })
+    })
   })
 
   // ─── POST /load-manifest ─────────────────────────────────────────────────
@@ -174,7 +247,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       active.map(async (entry) => {
         const [embBlob, entryBlob] = await Promise.all([
           downloadEmbeddingBlob(storage, entry.embeddingRef),
-          downloadEntryBlob(storage, entry.storageRef),
+          downloadEntryBlob(storage, entry.storageRef, entry.entryId),
         ])
         cache.set(entry.entryId, {
           content: entryBlob.content,
@@ -209,7 +282,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       active.map(async (entry) => {
         const [embBlob, entryBlob] = await Promise.all([
           downloadEmbeddingBlob(storage, entry.embeddingRef),
-          downloadEntryBlob(storage, entry.storageRef),
+          downloadEntryBlob(storage, entry.storageRef, entry.entryId),
         ])
         cache.set(entry.entryId, {
           content: entryBlob.content,
@@ -224,6 +297,26 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
     res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
   })
+
+  // ─── iNFT activation keeper ──────────────────────────────────────────────
+  // Runs every 2 minutes. For entries past their challenge window that have an
+  // onchainEntryId but no inftTokenId, calls activateEntry and caches the tokenId.
+
+  setInterval(async () => {
+    const now = Math.floor(Date.now() / 1000)
+    for (const [localId, entry] of cache.entries()) {
+      if (!entry.onchainEntryId || entry.inftTokenId) continue
+      if (entry.challengeWindowEnd && now < entry.challengeWindowEnd) continue
+
+      // Try to activate — may already be activated by a previous attempt
+      const tokenId = await activateEntryOnChain(entry.onchainEntryId)
+        .catch(() => getInftTokenId(entry.onchainEntryId!).catch(() => null))
+
+      if (tokenId && tokenId > 0n) {
+        cache.set(localId, { ...entry, inftTokenId: tokenId })
+      }
+    }
+  }, 2 * 60 * 1000)
 
   return app
 }

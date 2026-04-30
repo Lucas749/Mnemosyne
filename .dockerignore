@@ -1,0 +1,12 @@
+# syntax=docker/dockerfile:1
+.git
+node_modules
+packages/contracts
+packages/keepers
+packages/p2p
+packages/example-agent
+packages/frontend
+mnemosyne-py
+.local
+*.md
+.env

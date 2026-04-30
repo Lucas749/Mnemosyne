@@ -11,10 +11,18 @@ const zgTestnet = defineChain({
 const REGISTRY_ABI = parseAbi([
   'function submit(string storageRef, string embeddingRef, string[] tags, uint8 domain) external payable returns (bytes32)',
   'function recordQuery(bytes32 entryId, uint256 royaltyAmount) external',
+  'function activateEntry(bytes32 entryId) external',
+  'function getEntry(bytes32 entryId) external view returns (tuple(bytes32 id, string storageRef, string embeddingRef, string[] tags, uint8 domain, address submitter, uint256 stakeAmount, uint8 status, uint256 submittedAt, uint256 challengeWindowEnd, uint256 queryCount, uint256 royaltiesEarned, uint256 lastQueriedAt, uint256 inftTokenId))',
+  'event EntryActivated(bytes32 indexed entryId, uint256 inftTokenId)',
 ])
 
 const VAULT_ABI = parseAbi([
   'function depositQueryFee(address[] contributors, uint256[] shares) external payable',
+])
+
+const INFT_ABI = parseAbi([
+  'function authorizeUsage(uint256 tokenId, address executor, bytes permissions) external',
+  'function ownerOf(uint256 tokenId) external view returns (address)',
 ])
 
 const DOMAIN_INDEX: Record<string, number> = {
@@ -35,6 +43,12 @@ function clients() {
   const wallet  = createWalletClient({ chain: zgTestnet, transport: http(rpc), account })
   const pub     = createPublicClient({ chain: zgTestnet, transport: http(rpc) })
   return { wallet, pub, account }
+}
+
+export function getOperatorAddress(): `0x${string}` | null {
+  const key = process.env.ZG_PRIVATE_KEY
+  if (!key) return null
+  return privateKeyToAccount(key.startsWith('0x') ? key as `0x${string}` : `0x${key}`).address
 }
 
 /**
@@ -64,6 +78,92 @@ export async function submitOnChain(
   // entryId is the return value — encoded in the first log topic of EntrySubmitted event
   const log = receipt.logs[0]
   return (log?.topics[1] ?? null) as `0x${string}` | null
+}
+
+/**
+ * Call MnemosyneRegistry.activateEntry() after the challenge window passes.
+ * Returns the iNFT tokenId from the EntryActivated event, or null on failure.
+ */
+export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigint | null> {
+  const c = clients()
+  if (!c) return null
+  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  if (!registry) return null
+
+  const hash = await c.wallet.writeContract({
+    address: registry,
+    abi: REGISTRY_ABI,
+    functionName: 'activateEntry',
+    args: [entryId],
+  })
+
+  const receipt = await c.pub.waitForTransactionReceipt({ hash })
+  const log = receipt.logs.find(l => l.topics[0] === '0x' + Buffer.from('EntryActivated(bytes32,uint256)').toString('hex'))
+  // topics[2] is the inftTokenId (2nd indexed arg)
+  const tokenIdHex = receipt.logs[0]?.topics[2]
+  return tokenIdHex ? BigInt(tokenIdHex) : null
+}
+
+/**
+ * Read Entry from the registry and return its inftTokenId (0 if not yet activated).
+ */
+export async function getInftTokenId(entryId: `0x${string}`): Promise<bigint> {
+  const c = clients()
+  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  if (!c || !registry) return 0n
+
+  const entry = await c.pub.readContract({
+    address: registry,
+    abi: REGISTRY_ABI,
+    functionName: 'getEntry',
+    args: [entryId],
+  }) as { inftTokenId: bigint }
+
+  return entry.inftTokenId
+}
+
+/**
+ * Resolve the current iNFT owner — royalties follow the token, not the original submitter.
+ * Falls back to the provided fallback address if iNFT is not yet minted or chain is unavailable.
+ */
+export async function resolveRoyaltyRecipient(
+  tokenId: bigint,
+  fallback: `0x${string}`,
+): Promise<`0x${string}`> {
+  const c = clients()
+  const inft = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  if (!c || !inft) return fallback
+
+  const owner = await c.pub.readContract({
+    address: inft,
+    abi: INFT_ABI,
+    functionName: 'ownerOf',
+    args: [tokenId],
+  }).catch(() => null)
+
+  return (owner as `0x${string}` | null) ?? fallback
+}
+
+/**
+ * Call MnemosyneINFT.authorizeUsage() — grants a querying agent read rights
+ * without transferring ownership. Implements the ERC-7857 AIaaS pattern.
+ */
+export async function authorizeUsageOnChain(
+  tokenId: bigint,
+  executor: `0x${string}`,
+  permissions: `0x${string}`,
+): Promise<`0x${string}` | null> {
+  const c = clients()
+  if (!c) return null
+  const inft = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  if (!inft) return null
+
+  return c.wallet.writeContract({
+    address: inft,
+    abi: INFT_ABI,
+    functionName: 'authorizeUsage',
+    args: [tokenId, executor, permissions],
+  })
 }
 
 /**

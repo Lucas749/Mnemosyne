@@ -9,8 +9,10 @@ import "./interfaces/IERC7857.sol";
 contract MnemosyneRegistry is Ownable {
     // ─── Constants ───────────────────────────────────────────────────────────
 
-    uint256 public constant CHALLENGE_WINDOW = 48 hours;
     uint256 public constant MIN_STAKE = 0.005 ether;
+
+    // Owner-adjustable — start at 5 min for testnet demos, set to 48 hours for production
+    uint256 public challengeWindow = 5 minutes;
 
     // ─── Types ───────────────────────────────────────────────────────────────
 
@@ -19,7 +21,7 @@ contract MnemosyneRegistry is Ownable {
 
     struct Entry {
         bytes32 id;
-        string storageRef;
+        string storageRef;      // AES-256-GCM encrypted 0G storage ref
         string embeddingRef;
         string[] tags;
         EntryDomain domain;
@@ -84,6 +86,10 @@ contract MnemosyneRegistry is Ownable {
         authorized[account] = status;
     }
 
+    function setChallengeWindow(uint256 windowSeconds) external onlyOwner {
+        challengeWindow = windowSeconds;
+    }
+
     // ─── External ────────────────────────────────────────────────────────────
 
     /// @notice Submit a new entry. Caller must send ETH stake.
@@ -107,7 +113,7 @@ contract MnemosyneRegistry is Ownable {
             stakeAmount: msg.value,
             status: EntryStatus.pending,
             submittedAt: block.timestamp,
-            challengeWindowEnd: block.timestamp + CHALLENGE_WINDOW,
+            challengeWindowEnd: block.timestamp + challengeWindow,
             queryCount: 0,
             royaltiesEarned: 0,
             lastQueriedAt: 0,
@@ -134,7 +140,8 @@ contract MnemosyneRegistry is Ownable {
             dataDescription: _domainString(e.domain),
             dataHash: keccak256(abi.encodePacked(e.storageRef))
         });
-        uint256 tokenId = inftContract.mint(iData, e.submitter);
+        // storageRef is the encrypted 0G URI — stored on-chain for authorized access
+        uint256 tokenId = inftContract.mint(iData, e.submitter, e.storageRef);
         e.inftTokenId = tokenId;
 
         emit EntryActivated(entryId, tokenId);

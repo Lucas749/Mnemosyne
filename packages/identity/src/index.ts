@@ -3,7 +3,7 @@ import { sepolia } from 'viem/chains'
 import { privateKeyToAccount } from 'viem/accounts'
 import { addEnsContracts } from '@ensdomains/ensjs'
 import { getTextRecord, getAvailable, getPrice } from '@ensdomains/ensjs/public'
-import { setTextRecord, commitName, registerName } from '@ensdomains/ensjs/wallet'
+import { commitName, registerName } from '@ensdomains/ensjs/wallet'
 import { randomSecret } from '@ensdomains/ensjs/utils'
 
 const MEMORY_INDEX_KEY = 'memory.index'
@@ -18,7 +18,7 @@ export interface IdentityOptions {
 const DEFAULT_RPC = 'https://rpc.sepolia.org'
 
 function rpc(options: IdentityOptions) {
-  return options.rpcUrl ?? process.env.ENS_RPC_URL ?? DEFAULT_RPC
+  return options.rpcUrl ?? process.env.ENS_RPC_URL ?? process.env.SEPOLIA_RPC ?? DEFAULT_RPC
 }
 
 function makePublicClient(rpcUrl: string) {
@@ -38,13 +38,76 @@ function makeWalletClient(privateKey: `0x${string}`, rpcUrl: string) {
 }
 
 const ENS_REGISTRY = '0x00000000000C2E074eC69A0dFb2997BA6C7d2e1e' as const
-const REGISTRY_ABI = [{
-  name: 'setSubnodeOwner',
+
+const REGISTRY_ABI = [
+  {
+    name: 'setSubnodeOwner',
+    type: 'function' as const,
+    inputs: [{ type: 'bytes32' }, { type: 'bytes32' }, { type: 'address' }],
+    outputs: [{ type: 'bytes32' }],
+    stateMutability: 'nonpayable' as const,
+  },
+  {
+    name: 'resolver',
+    type: 'function' as const,
+    inputs: [{ type: 'bytes32' }],
+    outputs: [{ type: 'address' }],
+    stateMutability: 'view' as const,
+  },
+  {
+    name: 'setResolver',
+    type: 'function' as const,
+    inputs: [{ type: 'bytes32' }, { type: 'address' }],
+    outputs: [],
+    stateMutability: 'nonpayable' as const,
+  },
+]
+
+const RESOLVER_ABI = [{
+  name: 'setText',
   type: 'function' as const,
-  inputs: [{ type: 'bytes32' }, { type: 'bytes32' }, { type: 'address' }],
-  outputs: [{ type: 'bytes32' }],
+  inputs: [{ type: 'bytes32' }, { type: 'string' }, { type: 'string' }],
+  outputs: [],
   stateMutability: 'nonpayable' as const,
 }]
+
+/**
+ * Ensures a resolver is set for `name`. If not, inherits the parent name's resolver.
+ * Returns the resolver address.
+ */
+async function ensureResolver(
+  pub: ReturnType<typeof makePublicClient>,
+  wallet: ReturnType<typeof makeWalletClient>,
+  name: string,
+): Promise<`0x${string}`> {
+  const node = namehash(name)
+  let resolverAddr = await pub.readContract({
+    address: ENS_REGISTRY,
+    abi: REGISTRY_ABI,
+    functionName: 'resolver',
+    args: [node],
+  }) as `0x${string}`
+
+  if (resolverAddr === '0x0000000000000000000000000000000000000000') {
+    const parts = name.split('.')
+    const parentName = parts.slice(1).join('.')
+    resolverAddr = await pub.readContract({
+      address: ENS_REGISTRY,
+      abi: REGISTRY_ABI,
+      functionName: 'resolver',
+      args: [namehash(parentName)],
+    }) as `0x${string}`
+
+    await wallet.writeContract({
+      address: ENS_REGISTRY,
+      abi: REGISTRY_ABI,
+      functionName: 'setResolver',
+      args: [node, resolverAddr],
+    })
+  }
+
+  return resolverAddr
+}
 
 // ─── Text records ─────────────────────────────────────────────────────────────
 
@@ -59,6 +122,7 @@ export async function getMemoryIndex(
 
 /**
  * Write memory.index text record for an ENS name.
+ * Automatically sets resolver if none is configured (inherits from parent).
  * @returns transaction hash
  */
 export async function setMemoryIndex(
@@ -67,12 +131,15 @@ export async function setMemoryIndex(
   manifestRef: string,
   options: IdentityOptions = {},
 ): Promise<`0x${string}`> {
-  const client = makeWalletClient(privateKey, rpc(options))
-  return setTextRecord(client, {
-    name,
-    key: MEMORY_INDEX_KEY,
-    value: manifestRef,
-    account: client.account,
+  const rpcUrl  = rpc(options)
+  const pub     = makePublicClient(rpcUrl)
+  const wallet  = makeWalletClient(privateKey, rpcUrl)
+  const resolver = await ensureResolver(pub, wallet, name)
+  return wallet.writeContract({
+    address: resolver,
+    abi: RESOLVER_ABI,
+    functionName: 'setText',
+    args: [namehash(name), MEMORY_INDEX_KEY, manifestRef],
   })
 }
 
@@ -95,12 +162,15 @@ export async function setPaymentToken(
   token: string,
   options: IdentityOptions = {},
 ): Promise<`0x${string}`> {
-  const client = makeWalletClient(privateKey, rpc(options))
-  return setTextRecord(client, {
-    name,
-    key: PAYMENT_TOKEN_KEY,
-    value: token,
-    account: client.account,
+  const rpcUrl  = rpc(options)
+  const pub     = makePublicClient(rpcUrl)
+  const wallet  = makeWalletClient(privateKey, rpcUrl)
+  const resolver = await ensureResolver(pub, wallet, name)
+  return wallet.writeContract({
+    address: resolver,
+    abi: RESOLVER_ABI,
+    functionName: 'setText',
+    args: [namehash(name), PAYMENT_TOKEN_KEY, token],
   })
 }
 

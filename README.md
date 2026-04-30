@@ -183,13 +183,15 @@ python mnemosyne-py/example_agent.py
 | `agent.mnemosyne.eth` create | `0x635944f407919924991de660b8840491d2947515f172250b6431962ec6075a4b` |
 | `demo.mnemosyne.eth` create | `0x170272dbbaa6fd3acafebc3fadf06a3194f40bcc303a3a30ff11781d1cb2d0f9` |
 
-## Deployed contracts (0G-Galileo-Testnet, chain 16602)
+## Deployed contracts (0G-Galileo-Testnet, chain 16602) — v4
+
+v4: owner-settable `challengeWindow` via `setChallengeWindow(seconds)`. Starts at 5 min for testnet demos; call with `48 * 3600` for production. Full iNFT feature set: `authorizeUsage`, AES-256-GCM encrypted blobs, royalties routed to current iNFT owner.
 
 | Contract | Address |
 |---|---|
-| `StakeVault` | `0x0dc364a71854eA993Bd3814f212855F8083A9195` |
-| `MnemosyneINFT` | `0x34aB4396C7c45D678f78b74353918058054CEee7` |
-| `MnemosyneRegistry` | `0xe35bbF9305C3dF4164e0E6D9f963fE904660950F` |
-| `ValidatorRegistry` | `0x5bd5f438c9F1964B060594e8E83439eeA8601DeA` |
-| `ChallengeManager` | `0x72890aCfdA3A64E055358B36438E62fE9bB5cC3e` |
-| `RoyaltyVault` | `0x0Dd70350A12aD5CDE3Eb1f99a6dEb8F96563412b` |
+| `StakeVault` | `0x36d60d5c1e42996b5a423e6806b3569da4267466` |
+| `MnemosyneINFT` | `0x2f61af4fce58492a02f79063cded56c2f2a43379` |
+| `MnemosyneRegistry` | `0x868f671edb62d340e248986f06af323daad0a841` |
+| `ValidatorRegistry` | `0xf5d495488b5a59dcd268a8b6cf5222356bf9a25c` |
+| `ChallengeManager` | `0x49a015714d5cedb3507b0ce4ff12915061f79bc1` |
+| `RoyaltyVault` | `0x301763bc8edb79b62190b914d485f94ba63545d7` |

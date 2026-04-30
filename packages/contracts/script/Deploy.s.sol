@@ -34,11 +34,13 @@ contract Deploy is Script {
             address(validatorRegistry)
         );
 
-        // 4. Wire authorizations so Registry and ChallengeManager can call StakeVault
+        // 4. Wire authorizations
         stakeVault.setAuthorized(address(registry), true);
         stakeVault.setAuthorized(address(challengeManager), true);
         validatorRegistry.setAuthorized(address(challengeManager), true);
         royaltyVault.setAuthorized(address(registry), true);
+        // Registry mints/burns iNFTs; also allow registry to call authorizeUsage
+        inft.setAuthorized(address(registry), true);
 
         vm.stopBroadcast();
 
