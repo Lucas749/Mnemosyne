@@ -1,5 +1,6 @@
 import { createWalletClient, createPublicClient, http, defineChain, parseAbi } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
+import { routeRoyalty } from '@mnemosyne/payments'
 
 const zgTestnet = defineChain({
   id: 16602,
@@ -18,6 +19,7 @@ const REGISTRY_ABI = parseAbi([
 
 const VAULT_ABI = parseAbi([
   'function depositQueryFee(address[] contributors, uint256[] shares) external payable',
+  'function claimable(address) external view returns (uint256)',
 ])
 
 const INFT_ABI = parseAbi([
@@ -43,6 +45,72 @@ function clients() {
   const wallet  = createWalletClient({ chain: zgTestnet, transport: http(rpc), account })
   const pub     = createPublicClient({ chain: zgTestnet, transport: http(rpc) })
   return { wallet, pub, account }
+}
+
+/**
+ * Read how much A0GI each address has claimable in the RoyaltyVault on 0G.
+ * Used as the proportional basis for Uniswap payouts on Sepolia.
+ */
+export async function readVaultClaimable(addresses: `0x${string}`[]): Promise<Map<`0x${string}`, bigint>> {
+  const c = clients()
+  const vault = process.env.ROYALTY_VAULT_ADDRESS as `0x${string}` | undefined
+  const result = new Map<`0x${string}`, bigint>()
+  if (!c || !vault) return result
+
+  await Promise.all(addresses.map(async (addr) => {
+    const amount = await c.pub.readContract({
+      address: vault,
+      abi: VAULT_ABI,
+      functionName: 'claimable',
+      args: [addr],
+    }).catch(() => 0n)
+    if ((amount as bigint) > 0n) result.set(addr, amount as bigint)
+  }))
+
+  return result
+}
+
+export interface DistributeEntry {
+  ensName: string     // contributor's ENS name (has payment.token on Sepolia)
+  amountWei: bigint   // how much to route
+}
+
+export interface DistributeResult {
+  ensName: string
+  txHash: `0x${string}`
+  tokenOut: string
+  method: 'swap' | 'eth'
+}
+
+/**
+ * Route royalty payments to contributors via Uniswap.
+ * Reads each contributor's payment.token from ENS and swaps ETH → preferred token.
+ * Falls back to sending ETH directly if no token preference is set.
+ * Runs on Ethereum/Sepolia (ROYALTY_CHAIN_ID), NOT on 0G chain.
+ */
+export async function distributeViaUniswap(
+  entries: DistributeEntry[],
+): Promise<DistributeResult[]> {
+  const key = process.env.ZG_PRIVATE_KEY
+  if (!key) throw new Error('ZG_PRIVATE_KEY not set')
+
+  const pk       = (key.startsWith('0x') ? key : `0x${key}`) as `0x${string}`
+  const chainId  = parseInt(process.env.ROYALTY_CHAIN_ID ?? '1')
+  const rpcUrl   = process.env.ETH_RPC_URL
+  const ensRpc   = process.env.SEPOLIA_RPC
+
+  const results: DistributeResult[] = []
+
+  for (const entry of entries) {
+    const { txHash, tokenOut, method } = await routeRoyalty(pk, entry.ensName, entry.amountWei, {
+      chainId,
+      rpcUrl,
+      ensRpcUrl: ensRpc,
+    })
+    results.push({ ensName: entry.ensName, txHash, tokenOut, method })
+  }
+
+  return results
 }
 
 export function getOperatorAddress(): `0x${string}` | null {

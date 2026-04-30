@@ -12,7 +12,8 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, distributeViaUniswap, readVaultClaimable } from './chain.js'
+import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
 import type { StorageClient } from '@mnemosyne/storage'
@@ -296,6 +297,59 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     )
 
     res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
+  })
+
+  // ─── POST /distribute ────────────────────────────────────────────────────
+  // Route accumulated royalties to contributors via Uniswap.
+  // Reads payment.token from each contributor's ENS name and swaps ETH → token.
+  // Body: { contributors: [{ensName, amountWei}] }
+  // If contributors omitted, builds the list from the cache (1 ROYALTY_WEI per entry).
+
+  app.post('/distribute', async (req, res) => {
+    const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
+    let entries: DistributeEntry[]
+
+    if (req.body?.contributors?.length) {
+      entries = (req.body.contributors as {ensName: string; amountWei: string}[]).map(c => ({
+        ensName: c.ensName,
+        amountWei: BigInt(c.amountWei),
+      }))
+    } else {
+      // Collect ENS submitters + their resolved addresses from cache
+      const submitterMap = new Map<string, `0x${string}`>() // ensName → address
+      for (const entry of cache.values()) {
+        if (!entry.submittedBy?.endsWith('.eth') || !entry.submitterAddress) continue
+        submitterMap.set(entry.submittedBy, entry.submitterAddress)
+      }
+
+      // Read actual claimable balances from RoyaltyVault on 0G (accounting ledger)
+      // Use those proportions to determine Sepolia payout amounts
+      const addresses = Array.from(submitterMap.values())
+      const vaultBalances = await readVaultClaimable(addresses)
+
+      if (vaultBalances.size > 0) {
+        // Scale vault A0GI proportions to Sepolia ETH pool (1:1 ratio for demo)
+        entries = Array.from(submitterMap.entries())
+          .filter(([, addr]) => vaultBalances.has(addr))
+          .map(([ensName, addr]) => ({ ensName, amountWei: vaultBalances.get(addr)! }))
+      } else {
+        // Fallback: no vault balances — use 1 ROYALTY_WEI per cached entry
+        const totals = new Map<string, bigint>()
+        for (const entry of cache.values()) {
+          if (!entry.submittedBy?.endsWith('.eth')) continue
+          totals.set(entry.submittedBy, (totals.get(entry.submittedBy) ?? 0n) + royaltyWei)
+        }
+        entries = Array.from(totals.entries()).map(([ensName, amountWei]) => ({ ensName, amountWei }))
+      }
+    }
+
+    if (entries.length === 0) {
+      res.status(400).json({ error: 'No contributors to distribute to' })
+      return
+    }
+
+    const results = await distributeViaUniswap(entries)
+    res.json({ distributed: results.length, results })
   })
 
   // ─── iNFT activation keeper ──────────────────────────────────────────────
