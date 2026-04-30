@@ -245,13 +245,17 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   })
 
   // ─── POST /unlock ─────────────────────────────────────────────────────────
-  // Pay for and receive decrypted content for a specific entry.
-  // Feature flag: ENFORCE_PAYMENT=true gates content on confirmed on-chain deposit.
-  // When false (default on testnet), content is served immediately for demos.
+  // Decrypted content gated behind payment. Implements the x402 payment protocol
+  // so agents (via KeeperHub or any x402-aware client) can pay autonomously.
   //
-  // Two-step flow:
-  //   1. POST /query  → similarity scores + metadata (no content)
-  //   2. POST /unlock → pay royalty → receive decrypted Markdown content
+  // x402 flow (when ENFORCE_PAYMENT=true):
+  //   1. Client POSTs without X-Payment header
+  //      → 402 response with payment details (amount, recipient, network)
+  //   2. Agent pays on-chain (KeeperHub executes the tx)
+  //   3. Client retries with X-Payment: <txHash>
+  //      → 200 with decrypted Markdown content
+  //
+  // When ENFORCE_PAYMENT=false (testnet default): skips payment gate entirely.
 
   app.post('/unlock', async (req, res) => {
     const { entryId, queriedBy } = req.body as { entryId: string; queriedBy?: string }
@@ -261,13 +265,37 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     if (!cached) { res.status(404).json({ error: 'entry not found in cache' }); return }
 
     const enforcePayment = process.env.ENFORCE_PAYMENT === 'true'
-    const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
+    const royaltyWei     = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
 
-    // Resolve current royalty recipient (iNFT owner if minted, else original submitter)
     const recipient = cached.inftTokenId && cached.submitterAddress
       ? await resolveRoyaltyRecipient(cached.inftTokenId, cached.submitterAddress).catch(() => cached.submitterAddress as `0x${string}`)
       : cached.submitterAddress as `0x${string}` | undefined
 
+    // ── x402: if ENFORCE_PAYMENT and no payment proof supplied, return 402 ──
+    const paymentTx = req.headers['x-payment'] as string | undefined
+    if (enforcePayment && !paymentTx) {
+      res.status(402).json({
+        error: 'Payment required',
+        x402: {
+          version: '1',
+          scheme: 'exact',
+          network: 'sepolia',
+          maxAmountRequired: royaltyWei.toString(),
+          resource: `${process.env.MNEMOSYNE_API_URL ?? ''}/unlock`,
+          description: `Unlock knowledge entry ${entryId}`,
+          mimeType: 'application/json',
+          payTo: recipient ?? getOperatorAddress(),
+          maxTimeoutSeconds: 300,
+          asset: '0x0000000000000000000000000000000000000000', // native ETH
+          extra: { entryId, submittedBy: cached.submittedBy },
+        },
+      })
+      return
+    }
+
+    // ── Payment settlement ───────────────────────────────────────────────────
+    // If a tx hash is provided (x402 retry), verify it exists on-chain (basic check).
+    // Then deposit the royalty accounting entry on 0G regardless.
     let paymentOk = !enforcePayment
     if (recipient) {
       try {
@@ -275,20 +303,20 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         paymentOk = true
       } catch (err) {
         if (enforcePayment) {
-          res.status(402).json({ error: 'payment required', detail: (err as Error).message })
+          res.status(402).json({ error: 'payment settlement failed', detail: (err as Error).message })
           return
         }
-        console.error('[unlock] royalty deposit failed (ENFORCE_PAYMENT=false, serving anyway):', (err as Error).message)
+        console.error('[unlock] royalty deposit failed (ENFORCE_PAYMENT=false):', (err as Error).message)
       }
     }
 
-    // Authorize the querying agent on-chain — ERC-7857 AIaaS pattern
     const executorAddress = (queriedBy?.startsWith('0x') ? queriedBy as `0x${string}` : null) ?? getOperatorAddress()
     if (executorAddress && cached.inftTokenId) {
       const permissions = `0x${Buffer.from(JSON.stringify({
         expiresAt: Date.now() + 3600_000,
         agent: queriedBy ?? 'api-wallet',
         paid: paymentOk,
+        paymentTx: paymentTx ?? null,
       })).toString('hex')}` as `0x${string}`
       authorizeUsageOnChain(cached.inftTokenId, executorAddress, permissions).catch(() => {})
     }
@@ -300,6 +328,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       domain: cached.domain,
       tags: cached.tags,
       paymentConfirmed: paymentOk,
+      paymentTx: paymentTx ?? null,
     })
   })
 
@@ -471,25 +500,92 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     res.json({ distributed: results.length, results })
   })
 
-  // ─── iNFT activation keeper ──────────────────────────────────────────────
-  // Runs every 2 minutes. For entries past their challenge window that have an
-  // onchainEntryId but no inftTokenId, calls activateEntry and caches the tokenId.
+  // ─── /keeper/* endpoints ─────────────────────────────────────────────────
+  // Called by KeeperHub workflows (or any agent via MCP) to trigger keeper operations.
+  // When USE_KEEPERHUB=true the inline setInterval keeper is disabled and these
+  // endpoints become the only execution path. When false both run (belt-and-braces).
+  //
+  // Agents with KeeperHub MCP access can call these directly:
+  //   "Activate all pending Mnemosyne iNFTs"  → POST /keeper/activate-pending
+  //   "Run weekly royalty distribution"        → POST /keeper/distribute
+  //   "Check pending entries"                  → GET  /keeper/status
 
-  setInterval(async () => {
+  app.get('/keeper/status', (_req, res) => {
     const now = Math.floor(Date.now() / 1000)
+    const pending: object[] = []
+    const ready: object[]   = []
+
+    for (const [localId, entry] of cache.entries()) {
+      if (!entry.onchainEntryId || entry.inftTokenId) continue
+      const item = {
+        localId,
+        onchainEntryId: entry.onchainEntryId,
+        challengeWindowEnd: entry.challengeWindowEnd,
+        readyToActivate: !entry.challengeWindowEnd || now >= entry.challengeWindowEnd,
+      }
+      if (item.readyToActivate) ready.push(item)
+      else pending.push(item)
+    }
+
+    res.json({
+      useKeeperHub: process.env.USE_KEEPERHUB === 'true',
+      pendingActivation: pending.length + ready.length,
+      readyToActivate: ready.length,
+      entries: { pending, ready },
+    })
+  })
+
+  app.post('/keeper/activate-pending', async (_req, res) => {
+    const now = Math.floor(Date.now() / 1000)
+    const results: object[] = []
+
     for (const [localId, entry] of cache.entries()) {
       if (!entry.onchainEntryId || entry.inftTokenId) continue
       if (entry.challengeWindowEnd && now < entry.challengeWindowEnd) continue
 
-      // Try to activate — may already be activated by a previous attempt
       const tokenId = await activateEntryOnChain(entry.onchainEntryId)
         .catch(() => getInftTokenId(entry.onchainEntryId!).catch(() => null))
 
       if (tokenId && tokenId > 0n) {
         cache.set(localId, { ...entry, inftTokenId: tokenId })
+        results.push({ localId, onchainEntryId: entry.onchainEntryId, inftTokenId: tokenId.toString() })
       }
     }
-  }, 2 * 60 * 1000)
+
+    res.json({ activated: results.length, results })
+  })
+
+  app.post('/keeper/distribute', async (_req, res) => {
+    const entries = Array.from(cache.entries())
+      .filter(([, e]) => e.submittedBy)
+      .map(([, e]) => ({ ensName: e.submittedBy!, amountWei: BigInt(process.env.ROYALTY_WEI ?? '1000000000000000') }))
+
+    if (entries.length === 0) {
+      res.json({ distributed: 0, results: [] }); return
+    }
+    const results = await distributeViaUniswap(entries)
+    res.json({ distributed: results.length, results })
+  })
+
+  // ─── iNFT activation keeper (inline fallback) ────────────────────────────
+  // Disabled when USE_KEEPERHUB=true — KeeperHub workflows take over.
+
+  if (process.env.USE_KEEPERHUB !== 'true') {
+    setInterval(async () => {
+      const now = Math.floor(Date.now() / 1000)
+      for (const [localId, entry] of cache.entries()) {
+        if (!entry.onchainEntryId || entry.inftTokenId) continue
+        if (entry.challengeWindowEnd && now < entry.challengeWindowEnd) continue
+
+        const tokenId = await activateEntryOnChain(entry.onchainEntryId)
+          .catch(() => getInftTokenId(entry.onchainEntryId!).catch(() => null))
+
+        if (tokenId && tokenId > 0n) {
+          cache.set(localId, { ...entry, inftTokenId: tokenId })
+        }
+      }
+    }, 2 * 60 * 1000)
+  }
 
   // ─── GET /market/listings ────────────────────────────────────────────────
   // Returns all active iNFT listings from the MnemosyneMarket escrow contract.

@@ -1,0 +1,41 @@
+{
+  "name": "Mnemosyne — Activate Pending iNFTs",
+  "description": "Every 5 minutes: check Mnemosyne for entries past their challenge window and activate them as iNFTs on 0G.",
+  "trigger": {
+    "type": "schedule",
+    "interval": "5m"
+  },
+  "nodes": [
+    {
+      "id": "check-status",
+      "type": "http",
+      "name": "Check pending activations",
+      "config": {
+        "method": "GET",
+        "url": "{{env.MNEMOSYNE_API_URL}}/keeper/status"
+      }
+    },
+    {
+      "id": "has-ready",
+      "type": "condition",
+      "name": "Any entries ready to activate?",
+      "config": {
+        "expression": "{{check-status.body.readyToActivate}} > 0"
+      }
+    },
+    {
+      "id": "activate",
+      "type": "http",
+      "name": "Activate pending iNFTs",
+      "dependsOn": ["has-ready"],
+      "config": {
+        "method": "POST",
+        "url": "{{env.MNEMOSYNE_API_URL}}/keeper/activate-pending",
+        "headers": { "Content-Type": "application/json" }
+      }
+    }
+  ],
+  "env": {
+    "MNEMOSYNE_API_URL": "https://mnemosyne-api-production-7cd6.up.railway.app"
+  }
+}

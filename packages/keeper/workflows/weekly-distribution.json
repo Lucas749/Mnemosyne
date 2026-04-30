@@ -1,0 +1,23 @@
+{
+  "name": "Mnemosyne — Weekly Royalty Distribution",
+  "description": "Every Sunday at 00:00 UTC: distribute accumulated royalties to contributors via Uniswap on Sepolia.",
+  "trigger": {
+    "type": "schedule",
+    "cron": "0 0 * * 0"
+  },
+  "nodes": [
+    {
+      "id": "distribute",
+      "type": "http",
+      "name": "Trigger royalty distribution",
+      "config": {
+        "method": "POST",
+        "url": "{{env.MNEMOSYNE_API_URL}}/keeper/distribute",
+        "headers": { "Content-Type": "application/json" }
+      }
+    }
+  ],
+  "env": {
+    "MNEMOSYNE_API_URL": "https://mnemosyne-api-production-7cd6.up.railway.app"
+  }
+}
