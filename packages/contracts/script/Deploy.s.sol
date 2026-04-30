@@ -8,6 +8,7 @@ import "../src/MnemosyneRegistry.sol";
 import "../src/ValidatorRegistry.sol";
 import "../src/ChallengeManager.sol";
 import "../src/RoyaltyVault.sol";
+import "../src/MnemosyneMarket.sol";
 
 contract Deploy is Script {
     function run() external {
@@ -34,13 +35,19 @@ contract Deploy is Script {
             address(validatorRegistry)
         );
 
-        // 4. Wire authorizations
+        // 4. Market — escrow for iNFT trading
+        MnemosyneMarket market = new MnemosyneMarket(address(inft));
+
+        // 5. Wire authorizations
         stakeVault.setAuthorized(address(registry), true);
         stakeVault.setAuthorized(address(challengeManager), true);
         validatorRegistry.setAuthorized(address(challengeManager), true);
         royaltyVault.setAuthorized(address(registry), true);
-        // Registry mints/burns iNFTs; also allow registry to call authorizeUsage
         inft.setAuthorized(address(registry), true);
+        // Market needs approval to move iNFTs on behalf of the API wallet
+        inft.setAuthorized(address(market), true);
+        // API wallet (deployer) is authorized to relay list/buy on behalf of users
+        market.setAuthorized(vm.addr(deployerKey), true);
 
         vm.stopBroadcast();
 
@@ -50,5 +57,6 @@ contract Deploy is Script {
         console2.log("ValidatorRegistry: ", address(validatorRegistry));
         console2.log("ChallengeManager:  ", address(challengeManager));
         console2.log("RoyaltyVault:      ", address(royaltyVault));
+        console2.log("MnemosyneMarket:   ", address(market));
     }
 }

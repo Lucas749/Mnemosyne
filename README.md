@@ -232,15 +232,16 @@ python mnemosyne-py/example_agent.py
 | `agent.mnemosyne.eth` create | `0x635944f407919924991de660b8840491d2947515f172250b6431962ec6075a4b` |
 | `demo.mnemosyne.eth` create | `0x170272dbbaa6fd3acafebc3fadf06a3194f40bcc303a3a30ff11781d1cb2d0f9` |
 
-## Deployed contracts (0G-Galileo-Testnet, chain 16602) — v5
+## Deployed contracts (0G-Galileo-Testnet, chain 16602) — v6
 
-v5: `UserProfile` on-chain — contributors call `setProfile(paymentToken, ensName)` to declare their preferred payout token. Entry indexes (`getAllEntries`, `getSubmitterEntries`) for frontend enumeration. Aggregate per-user stats (`totalQueries`, `totalRoyalties`) updated on every query. Royalty distribution reads on-chain `paymentToken` first, falls back to ENS `payment.token`.
+v6: `MnemosyneMarket` escrow — iNFT holders can list knowledge at a fixed A0GI price. Buyers pay the escrow; it atomically transfers the iNFT and forwards A0GI to the seller. After a sale the royalty stream follows the new iNFT owner automatically. API endpoints: `GET /market/listings`, `POST /market/list`, `POST /market/buy`, `PATCH /market/listing/:id`, `DELETE /market/listing/:id`.
 
 | Contract | Address |
 |---|---|
-| `StakeVault` | `0xa98f69ed695c770ae43ee94013542e0beef57050` |
-| `MnemosyneINFT` | `0x192f1fd574095c9199cfd409e97bd5437ced0589` |
-| `MnemosyneRegistry` | `0x9d8125a2e095006d08f75212c7384de232f3976e` |
-| `ValidatorRegistry` | `0xe2ec905a9795550bd848b5d06b60a1096aabb735` |
-| `ChallengeManager` | `0xeebd30236210b925b2f9383fd64a335bbcb75047` |
-| `RoyaltyVault` | `0x8d99824535ab8f95fcf4d8ea8e80ad6eda1bef5b` |
+| `StakeVault` | `0x333E1BD1bA8970b11b0bFe13a6A98765788e5D71` |
+| `MnemosyneINFT` | `0x8fbDb7666F8D301d9C974982764ab1B39917cc82` |
+| `MnemosyneRegistry` | `0xaA40404DC25248c886c8fb6C27e34536aB2b8001` |
+| `ValidatorRegistry` | `0xE1fdc2AC10ead14dDb15992134662AE905497C3b` |
+| `ChallengeManager` | `0xAe66d96339f43F72BCB0164F70E0cB90FA959166` |
+| `RoyaltyVault` | `0x4ad5B6a01CDCAcaC31Ce89e9B6e92EB5c8207507` |
+| `MnemosyneMarket` | `0x8fADa38137C0407800c0320BBf6985D08016E8A3` |

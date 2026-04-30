@@ -29,6 +29,16 @@ const VAULT_ABI = parseAbi([
 const INFT_ABI = parseAbi([
   'function authorizeUsage(uint256 tokenId, address executor, bytes permissions) external',
   'function ownerOf(uint256 tokenId) external view returns (address)',
+  'function approve(address to, uint256 tokenId) external',
+])
+
+const MARKET_ABI = parseAbi([
+  'function listFor(uint256 tokenId, address seller, uint256 price) external',
+  'function buyFor(uint256 tokenId, address recipient) external payable',
+  'function cancel(uint256 tokenId) external',
+  'function updatePrice(uint256 tokenId, uint256 newPrice) external',
+  'function listings(uint256 tokenId) external view returns (address seller, uint256 price, bool active)',
+  'function getActiveListings() external view returns (uint256[] tokenIds, tuple(address seller, uint256 price, bool active)[] lst)',
 ])
 
 const DOMAIN_INDEX: Record<string, number> = {
@@ -216,15 +226,18 @@ export async function getInftTokenId(entryId: `0x${string}`): Promise<bigint> {
 }
 
 /**
- * Resolve the current iNFT owner — royalties follow the token, not the original submitter.
- * Falls back to the provided fallback address if iNFT is not yet minted or chain is unavailable.
+ * Resolve the current royalty recipient for a token.
+ * Royalties follow the iNFT owner — but while a token is held in the market escrow,
+ * ownerOf() returns the market contract. In that case we look up the listing's seller
+ * so royalties continue flowing to them until the sale completes.
  */
 export async function resolveRoyaltyRecipient(
   tokenId: bigint,
   fallback: `0x${string}`,
 ): Promise<`0x${string}`> {
   const c = clients()
-  const inft = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  const inft   = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  const market = marketAddress()
   if (!c || !inft) return fallback
 
   const owner = await c.pub.readContract({
@@ -232,9 +245,23 @@ export async function resolveRoyaltyRecipient(
     abi: INFT_ABI,
     functionName: 'ownerOf',
     args: [tokenId],
-  }).catch(() => null)
+  }).catch(() => null) as `0x${string}` | null
 
-  return (owner as `0x${string}` | null) ?? fallback
+  if (!owner) return fallback
+
+  // If the iNFT is sitting in escrow, route royalties to the seller, not the contract
+  if (market && owner.toLowerCase() === market.toLowerCase()) {
+    const listing = await c.pub.readContract({
+      address: market,
+      abi: MARKET_ABI,
+      functionName: 'listings',
+      args: [tokenId],
+    }).catch(() => null) as { seller: `0x${string}`; price: bigint; active: boolean } | null
+
+    if (listing?.active && listing.seller) return listing.seller
+  }
+
+  return owner
 }
 
 /**
@@ -285,5 +312,101 @@ export async function depositQueryFeeOnChain(
     functionName: 'depositQueryFee',
     args: [contributors, shares],
     value: valueWei,
+  })
+}
+
+export interface MarketListing {
+  tokenId: bigint
+  seller: `0x${string}`
+  price: bigint
+  active: boolean
+}
+
+function marketAddress() {
+  return process.env.MNEMOSYNE_MARKET_ADDRESS as `0x${string}` | undefined
+}
+
+export async function getActiveListings(): Promise<MarketListing[]> {
+  const c = clients()
+  const market = marketAddress()
+  if (!c || !market) return []
+
+  const result = await c.pub.readContract({
+    address: market,
+    abi: MARKET_ABI,
+    functionName: 'getActiveListings',
+  }) as [bigint[], { seller: `0x${string}`; price: bigint; active: boolean }[]]
+
+  const [tokenIds, lst] = result
+  return tokenIds.map((tokenId, i) => ({ tokenId, ...lst[i] }))
+}
+
+export async function listOnMarket(
+  tokenId: bigint,
+  sellerAddress: `0x${string}`,
+  priceWei: bigint,
+): Promise<`0x${string}` | null> {
+  const c = clients()
+  const market = marketAddress()
+  const inft   = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  if (!c || !market || !inft) return null
+
+  // Approve market to move the iNFT (API wallet owns it after minting)
+  await c.wallet.writeContract({
+    address: inft,
+    abi: INFT_ABI,
+    functionName: 'approve',
+    args: [market, tokenId],
+  })
+
+  return c.wallet.writeContract({
+    address: market,
+    abi: MARKET_ABI,
+    functionName: 'listFor',
+    args: [tokenId, sellerAddress, priceWei],
+  })
+}
+
+export async function buyFromMarket(
+  tokenId: bigint,
+  recipientAddress: `0x${string}`,
+  priceWei: bigint,
+): Promise<`0x${string}` | null> {
+  const c = clients()
+  const market = marketAddress()
+  if (!c || !market) return null
+
+  return c.wallet.writeContract({
+    address: market,
+    abi: MARKET_ABI,
+    functionName: 'buyFor',
+    args: [tokenId, recipientAddress],
+    value: priceWei,
+  })
+}
+
+export async function cancelMarketListing(tokenId: bigint): Promise<`0x${string}` | null> {
+  const c = clients()
+  const market = marketAddress()
+  if (!c || !market) return null
+
+  return c.wallet.writeContract({
+    address: market,
+    abi: MARKET_ABI,
+    functionName: 'cancel',
+    args: [tokenId],
+  })
+}
+
+export async function updateMarketPrice(tokenId: bigint, newPriceWei: bigint): Promise<`0x${string}` | null> {
+  const c = clients()
+  const market = marketAddress()
+  if (!c || !market) return null
+
+  return c.wallet.writeContract({
+    address: market,
+    abi: MARKET_ABI,
+    functionName: 'updatePrice',
+    args: [tokenId, newPriceWei],
   })
 }

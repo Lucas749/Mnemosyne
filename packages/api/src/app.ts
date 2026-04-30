@@ -12,7 +12,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, distributeViaUniswap, readVaultClaimable } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
 import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
@@ -490,6 +490,84 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       }
     }
   }, 2 * 60 * 1000)
+
+  // ─── GET /market/listings ────────────────────────────────────────────────
+  // Returns all active iNFT listings from the MnemosyneMarket escrow contract.
+
+  app.get('/market/listings', async (_req, res) => {
+    const listings = await getActiveListings()
+    res.json({
+      listings: listings.map((l) => ({
+        tokenId: l.tokenId.toString(),
+        seller:  l.seller,
+        price:   l.price.toString(),
+        priceEth: (Number(l.price) / 1e18).toFixed(6),
+      })),
+    })
+  })
+
+  // ─── POST /market/list ───────────────────────────────────────────────────
+  // List an iNFT for sale. The API wallet (which owns all minted iNFTs) acts as relayer.
+  // Body: { tokenId: string, sellerAddress: string, priceWei: string }
+
+  app.post('/market/list', async (req, res) => {
+    const { tokenId, sellerAddress, priceWei } = req.body as {
+      tokenId: string
+      sellerAddress: string
+      priceWei: string
+    }
+    if (!tokenId || !sellerAddress || !priceWei) {
+      res.status(400).json({ error: 'tokenId, sellerAddress, priceWei required' }); return
+    }
+    const txHash = await listOnMarket(
+      BigInt(tokenId),
+      sellerAddress as `0x${string}`,
+      BigInt(priceWei),
+    )
+    res.json({ txHash, tokenId, sellerAddress, priceWei })
+  })
+
+  // ─── POST /market/buy ────────────────────────────────────────────────────
+  // Buy a listed iNFT. API wallet pays the price in A0GI and sends the iNFT to recipient.
+  // Body: { tokenId: string, recipientAddress: string, priceWei: string }
+
+  app.post('/market/buy', async (req, res) => {
+    const { tokenId, recipientAddress, priceWei } = req.body as {
+      tokenId: string
+      recipientAddress: string
+      priceWei: string
+    }
+    if (!tokenId || !recipientAddress || !priceWei) {
+      res.status(400).json({ error: 'tokenId, recipientAddress, priceWei required' }); return
+    }
+    const txHash = await buyFromMarket(
+      BigInt(tokenId),
+      recipientAddress as `0x${string}`,
+      BigInt(priceWei),
+    )
+    // After purchase the royalty stream follows the new owner — resolveRoyaltyRecipient
+    // will pick up the new ownerOf() automatically on the next query.
+    res.json({ txHash, tokenId, recipientAddress })
+  })
+
+  // ─── DELETE /market/listing/:tokenId ─────────────────────────────────────
+  // Cancel a listing and return the iNFT to the seller.
+
+  app.delete('/market/listing/:tokenId', async (req, res) => {
+    const txHash = await cancelMarketListing(BigInt(req.params.tokenId))
+    res.json({ txHash, tokenId: req.params.tokenId })
+  })
+
+  // ─── PATCH /market/listing/:tokenId ──────────────────────────────────────
+  // Update the price of an active listing.
+  // Body: { priceWei: string }
+
+  app.patch('/market/listing/:tokenId', async (req, res) => {
+    const { priceWei } = req.body as { priceWei: string }
+    if (!priceWei) { res.status(400).json({ error: 'priceWei required' }); return }
+    const txHash = await updateMarketPrice(BigInt(req.params.tokenId), BigInt(priceWei))
+    res.json({ txHash, tokenId: req.params.tokenId, priceWei })
+  })
 
   return app
 }
