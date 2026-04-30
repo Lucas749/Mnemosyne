@@ -18,6 +18,7 @@ Run:
 
 import os
 import sys
+import time
 import requests
 
 API_URL  = os.environ.get("MNEMOSYNE_API_URL", "http://localhost:3000").rstrip("/")
@@ -60,6 +61,19 @@ def check_health():
     print(f"API  {API_URL}   entries in cache: {h.get('entries', 0)}")
 
 
+def poll_job(job_id):
+    for _ in range(60):
+        time.sleep(3)
+        r = requests.get(f"{API_URL}/jobs/{job_id}", timeout=10)
+        r.raise_for_status()
+        job = r.json()
+        if job["status"] == "done":
+            return job["result"]
+        if job["status"] == "error":
+            raise RuntimeError(job.get("error", "job failed"))
+    raise TimeoutError("job timed out")
+
+
 def teach_agent():
     print(f"\nSubmitter: {AGENT_ENS}\n")
     for fact in FACTS:
@@ -71,22 +85,23 @@ def teach_agent():
                 "tags": fact["tags"],
                 "submittedBy": AGENT_ENS,
             },
-            timeout=120,
+            timeout=30,
         )
         resp.raise_for_status()
-        data = resp.json()
-        entry_id   = data["entryId"][:20]
-        onchain    = f"  onchain: {data['onchainId'][:18]}..." if data.get("onchainId") else ""
-        print(f"  stored  {entry_id}...{onchain}")
+        job_id = resp.json()["jobId"]
+        result = poll_job(job_id)
+        entry_id = result["entryId"][:20]
+        print(f"  stored  {entry_id}...")
         print(f"          \"{fact['content'][:70]}...\"")
 
 
 def query_memory():
     for q in QUESTIONS:
         print(f"\n  Q: \"{q}\"")
+        # Step 1 — discovery (free, returns similarity scores only)
         resp = requests.post(
             f"{API_URL}/query",
-            json={"text": q, "topK": 3},
+            json={"text": q, "topK": 3, "queriedBy": AGENT_ENS},
             timeout=60,
         )
         resp.raise_for_status()
@@ -99,15 +114,27 @@ def query_memory():
         for m in matches:
             pct   = round(m["similarity"] * 100)
             label = "HIGH" if pct >= 80 else "HINT" if pct >= 50 else "WEAK"
-            print(f"     {pct}% [{label}]  \"{m['content'][:75]}...\"")
+            print(f"     {pct}% [{label}]  entry:{m['entryId'][:18]}... by {m.get('submittedBy','?')}")
 
         top = matches[0]
-        if top["similarity"] >= 0.7:
-            print(f"\n  Agent: Based on verified memory — {top['content']}")
-        elif top["similarity"] >= 0.45:
-            print(f"\n  Agent: Possibly relevant — \"{top['content'][:80]}...\" (low confidence)")
-        else:
+        if top["similarity"] < 0.5:
             print("\n  Agent: No high-confidence memory found.")
+            continue
+
+        # Step 2 — unlock (pays royalty, returns decrypted Markdown content)
+        unlock = requests.post(
+            f"{API_URL}/unlock",
+            json={"entryId": top["entryId"], "queriedBy": AGENT_ENS},
+            timeout=60,
+        )
+        unlock.raise_for_status()
+        content = unlock.json().get("content", "")
+        paid    = unlock.json().get("paymentConfirmed", False)
+
+        if top["similarity"] >= 0.7:
+            print(f"\n  Agent (paid={paid}): {content[:120]}")
+        else:
+            print(f"\n  Agent (paid={paid}): Possibly relevant — \"{content[:80]}...\" (low confidence)")
 
 
 def ens_discovery():

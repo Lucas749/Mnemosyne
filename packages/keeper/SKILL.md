@@ -140,6 +140,27 @@ web_fetch POST https://mnemosyne-api-production-7cd6.up.railway.app/keeper/activ
 
 ---
 
+## Running the demos
+
+**TypeScript (full lifecycle, no LLM needed):**
+```bash
+npx ts-node packages/keeper/demo-agent.ts
+```
+
+**Python (LangChain tools, no LLM needed):**
+```bash
+python packages/keeper/demo-agent.py
+```
+
+Both demos show the same loop:
+1. Store Markdown knowledge
+2. Poll keeper status via `KeeperStatusTool`
+3. Activate iNFTs via `KeeperActivateTool`
+4. Query (free, similarity only) → unlock with x402 via `KeeperUnlockTool`
+5. Distribute royalties via `KeeperDistributeTool`
+
+---
+
 ## Automated workflows (KeeperHub schedules)
 
 Import these into KeeperHub from `packages/keeper/workflows/`:
