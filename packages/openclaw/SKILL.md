@@ -81,28 +81,59 @@ Example:
 }
 ```
 
-## Querying memory
+## Querying memory (two-step: discover → unlock)
 
-Before answering questions, query Mnemosyne first to recall verified facts:
+Knowledge retrieval is a two-step process. Step 1 is free (discovery); step 2 pays the contributor and releases the content.
+
+### Step 1 — Discover (free)
 
 ```
 POST $MNEMOSYNE_API_URL/query
 Content-Type: application/json
 
 {
-  "text": "<your question or topic in natural language>",
+  "text": "<your question or topic>",
   "topK": 5,
-  "domains": ["factual"]
+  "domains": ["factual"],
+  "queriedBy": "$MNEMOSYNE_ENS"
 }
 ```
 
-The response is a ranked list of `matches` by semantic similarity (0–1).
+Returns similarity scores and metadata — **no content yet**. Use the scores to decide which entries are worth paying for.
 
-- `similarity >= 0.8` → high-confidence recall, use directly in your answer
-- `similarity 0.5–0.8` → relevant hint, use with caveat
-- `similarity < 0.5` → discard
+- `similarity >= 0.8` → high confidence — worth unlocking
+- `similarity 0.5–0.8` → relevant — unlock if the topic matters
+- `similarity < 0.5` → likely not useful — skip
 
-Each query also deposits a micro-royalty into the RoyaltyVault on-chain for each matched contributor.
+### Step 2 — Unlock (pays royalty, returns Markdown content)
+
+For each entry you want to read:
+
+```
+POST $MNEMOSYNE_API_URL/unlock
+Content-Type: application/json
+
+{
+  "entryId": "<entryId from query result>",
+  "queriedBy": "$MNEMOSYNE_ENS"
+}
+```
+
+This deposits a micro-royalty on-chain to the contributor (current iNFT owner), records your agent as an authorized executor via `ERC-7857 authorizeUsage`, then returns the decrypted Markdown content.
+
+Response:
+```json
+{
+  "entryId": "0xabc123...",
+  "content": "# Full Markdown content here...",
+  "submittedBy": "demo.mnemosyne.eth",
+  "domain": "factual",
+  "tags": ["ethereum"],
+  "paymentConfirmed": true
+}
+```
+
+**Feature flag:** `ENFORCE_PAYMENT=true` on the server hard-gates content — returns HTTP 402 if the royalty deposit fails. Default is `false` (testnet-friendly, logs failure but serves anyway).
 
 ## Loading another agent's memory
 
@@ -127,13 +158,13 @@ This resolves the ENS `memory.index` text record → downloads the 0G manifest �
 ## Workflow: Research agent pattern
 
 When asked to research a topic:
-1. `POST /query` with the topic — recall what you already know
-2. If knowledge gap exists, research externally (web_fetch, etc.)
-3. Distill findings into discrete facts
-4. `POST /store` each fact with appropriate domain + tags
-5. Answer the user using the combined stored + freshly-researched context
+1. `POST /query` — discover relevant entries (free, no payment)
+2. `POST /unlock` for entries with `similarity >= 0.8` — pay and receive Markdown content
+3. If knowledge gap still exists, research externally (web_fetch, etc.)
+4. Distill findings and `POST /store` each fact with appropriate domain + tags
+5. Answer the user using the combined unlocked + freshly-researched context
 
-This pattern means your knowledge compounds: every research session makes future sessions faster and earns royalties when other agents ask about the same topic.
+This pattern compounds knowledge: every research session builds the shared brain and earns royalties for contributors.
 
 ## Worked example — OpenClaw agent interaction
 
@@ -143,29 +174,46 @@ Below is a realistic transcript of an OpenClaw agent using this skill.
 
 **User:** When did Ethereum switch to proof of stake? Research it if you don't know.
 
-**Agent (step 1 — recall first):**
+**Agent (step 1 — discover):**
 ```
 web_fetch POST https://mnemosyne-api-production-7cd6.up.railway.app/query
-{"text": "Ethereum proof of stake transition date", "topK": 3}
+{"text": "Ethereum proof of stake transition date", "topK": 3, "queriedBy": "my-agent.mnemosyne.eth"}
 ```
 
-*Response:*
+*Response (metadata only — no content):*
 ```json
 {
   "matches": [
     {
       "entryId": "0xabc123...",
-      "content": "The Ethereum merge (transition from PoW to PoS) occurred on September 15, 2022 at epoch 144896.",
       "similarity": 0.94,
-      "submittedBy": "demo.mnemosyne.eth"
+      "submittedBy": "demo.mnemosyne.eth",
+      "domain": "factual",
+      "tags": ["ethereum", "consensus"],
+      "hasContent": true
     }
   ]
 }
 ```
 
-**Agent (step 2 — high confidence recall, answer directly):**
+**Agent (step 2 — similarity 0.94, worth unlocking):**
+```
+web_fetch POST https://mnemosyne-api-production-7cd6.up.railway.app/unlock
+{"entryId": "0xabc123...", "queriedBy": "my-agent.mnemosyne.eth"}
+```
 
-> Based on verified memory (94% confidence, sourced from demo.mnemosyne.eth):
+*Response (decrypted Markdown, royalty paid):*
+```json
+{
+  "entryId": "0xabc123...",
+  "content": "The Ethereum merge (transition from PoW to PoS) occurred on **September 15, 2022** at epoch 144896.",
+  "paymentConfirmed": true
+}
+```
+
+**Agent (step 3 — answer using unlocked content):**
+
+> Based on verified memory (94% confidence, sourced from `demo.mnemosyne.eth`):
 > The Ethereum merge occurred on **September 15, 2022** at epoch 144896, transitioning the network from proof-of-work to proof-of-stake.
 
 ---

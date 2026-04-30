@@ -27,9 +27,13 @@ interface CachedEntry {
   domain?: string
   submittedBy?: string
   submitterAddress?: `0x${string}`
-  onchainEntryId?: `0x${string}`  // bytes32 from EntrySubmitted event
-  challengeWindowEnd?: number      // unix seconds — when activateEntry becomes callable
-  inftTokenId?: bigint             // set once activateEntry is called
+  onchainEntryId?: `0x${string}`
+  challengeWindowEnd?: number
+  inftTokenId?: bigint
+  // Graph edges: entryId → similarity score for pairs above threshold
+  edges?: Record<string, number>
+  // Agents that have queried this entry (from authorizeUsage calls)
+  queriedByAgents?: string[]
 }
 
 type JobStatus = 'pending' | 'done' | 'error'
@@ -122,6 +126,19 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
         : undefined
 
+      // Compute similarity edges against all existing entries
+      const EDGE_THRESHOLD = 0.6
+      const edges: Record<string, number> = {}
+      for (const [existingId, existing] of cache.entries()) {
+        const sim = cosineSimilarity(embBlob.vector, existing.vector)
+        if (sim >= EDGE_THRESHOLD) {
+          edges[existingId] = Math.round(sim * 1000) / 1000
+          // Add back-edge on existing entry
+          const ex = cache.get(existingId)!
+          cache.set(existingId, { ...ex, edges: { ...ex.edges, [entryId]: edges[existingId] } })
+        }
+      }
+
       cache.set(entryId, {
         content: body.content,
         vector: embBlob.vector,
@@ -131,6 +148,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         submittedBy,
         onchainEntryId: onchainEntryId ?? undefined,
         challengeWindowEnd,
+        edges,
+        queriedByAgents: [],
       })
 
       let manifestRef: string | undefined
@@ -188,43 +207,32 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         entries = entries.filter(([, e]) => domains.includes(e.domain as any))
       }
 
+      // Return metadata + similarity only — content is gated behind POST /unlock.
+      // The agent decides which entries to pay for based on the scores returned here.
       const matches = entries
         .map(([entryId, e]) => ({
           entryId,
-          content: e.content,
           similarity: cosineSimilarity(queryEmb.vector, e.vector),
           storageRef: e.storageRef,
           tags: e.tags,
           domain: e.domain as any,
           submittedBy: e.submittedBy,
           submitterAddress: e.submitterAddress,
+          hasContent: true, // indicates content is available via POST /unlock
         }))
         .sort((a, b) => b.similarity - a.similarity)
         .slice(0, topK)
 
-      const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
-      // Royalties flow to the current iNFT owner, not necessarily the original submitter.
-      // This means buying an iNFT transfers the royalty stream too.
-      const contributorPromises = matches.map(async (m) => {
-        const cached = cache.get(m.entryId)
-        if (cached?.inftTokenId && m.submitterAddress) {
-          return resolveRoyaltyRecipient(cached.inftTokenId, m.submitterAddress)
-        }
-        return m.submitterAddress as `0x${string}` | undefined
-      })
-      const contributors = (await Promise.all(contributorPromises))
-        .filter((a): a is `0x${string}` => !!a)
-      depositQueryFeeOnChain(contributors, royaltyWei * BigInt(matches.length)).catch(() => {})
-
-      // Authorize the API wallet as executor for each matched iNFT — ERC-7857 AIaaS pattern.
-      // Grants read rights without transferring ownership.
-      const operatorAddress = getOperatorAddress()
-      if (operatorAddress) {
-        const permissions = `0x${Buffer.from(JSON.stringify({ expiresAt: Date.now() + 3600_000, query: body.text })).toString('hex')}` as `0x${string}`
+      // Track querying agent in cache for the graph (no payment needed for discovery)
+      const queriedBy = body.queriedBy
+      if (queriedBy) {
         for (const m of matches) {
           const cached = cache.get(m.entryId)
-          if (cached?.inftTokenId) {
-            authorizeUsageOnChain(cached.inftTokenId, operatorAddress, permissions).catch(() => {})
+          if (cached) {
+            const agents = cached.queriedByAgents ?? []
+            if (!agents.includes(queriedBy)) {
+              cache.set(m.entryId, { ...cached, queriedByAgents: [...agents, queriedBy] })
+            }
           }
         }
       }
@@ -233,6 +241,65 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     })().catch((err) => {
       console.error('[query] job failed:', err?.message ?? err)
       jobs.set(jobId, { status: 'error', error: err?.message ?? String(err), createdAt: Date.now() })
+    })
+  })
+
+  // ─── POST /unlock ─────────────────────────────────────────────────────────
+  // Pay for and receive decrypted content for a specific entry.
+  // Feature flag: ENFORCE_PAYMENT=true gates content on confirmed on-chain deposit.
+  // When false (default on testnet), content is served immediately for demos.
+  //
+  // Two-step flow:
+  //   1. POST /query  → similarity scores + metadata (no content)
+  //   2. POST /unlock → pay royalty → receive decrypted Markdown content
+
+  app.post('/unlock', async (req, res) => {
+    const { entryId, queriedBy } = req.body as { entryId: string; queriedBy?: string }
+    if (!entryId) { res.status(400).json({ error: 'entryId required' }); return }
+
+    const cached = cache.get(entryId)
+    if (!cached) { res.status(404).json({ error: 'entry not found in cache' }); return }
+
+    const enforcePayment = process.env.ENFORCE_PAYMENT === 'true'
+    const royaltyWei = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
+
+    // Resolve current royalty recipient (iNFT owner if minted, else original submitter)
+    const recipient = cached.inftTokenId && cached.submitterAddress
+      ? await resolveRoyaltyRecipient(cached.inftTokenId, cached.submitterAddress).catch(() => cached.submitterAddress as `0x${string}`)
+      : cached.submitterAddress as `0x${string}` | undefined
+
+    let paymentOk = !enforcePayment
+    if (recipient) {
+      try {
+        await depositQueryFeeOnChain([recipient], royaltyWei)
+        paymentOk = true
+      } catch (err) {
+        if (enforcePayment) {
+          res.status(402).json({ error: 'payment required', detail: (err as Error).message })
+          return
+        }
+        console.error('[unlock] royalty deposit failed (ENFORCE_PAYMENT=false, serving anyway):', (err as Error).message)
+      }
+    }
+
+    // Authorize the querying agent on-chain — ERC-7857 AIaaS pattern
+    const executorAddress = (queriedBy?.startsWith('0x') ? queriedBy as `0x${string}` : null) ?? getOperatorAddress()
+    if (executorAddress && cached.inftTokenId) {
+      const permissions = `0x${Buffer.from(JSON.stringify({
+        expiresAt: Date.now() + 3600_000,
+        agent: queriedBy ?? 'api-wallet',
+        paid: paymentOk,
+      })).toString('hex')}` as `0x${string}`
+      authorizeUsageOnChain(cached.inftTokenId, executorAddress, permissions).catch(() => {})
+    }
+
+    res.json({
+      entryId,
+      content: cached.content,
+      submittedBy: cached.submittedBy,
+      domain: cached.domain,
+      tags: cached.tags,
+      paymentConfirmed: paymentOk,
     })
   })
 
@@ -297,6 +364,58 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     )
 
     res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
+  })
+
+  // ─── GET /graph ──────────────────────────────────────────────────────────
+  // Returns the full knowledge graph: nodes (entries + agents) + edges.
+  // Nodes: one per entry + one per unique ENS submitter (agent node).
+  // Entry↔Entry edges: cosine similarity ≥ 0.6 (computed at store time).
+  // Agent→Entry edges: derived from submittedBy + queriedByAgents.
+
+  app.get('/graph', (_req, res) => {
+    const nodes: object[] = []
+    const edges: object[] = []
+    const agentsSeen = new Set<string>()
+
+    for (const [entryId, entry] of cache.entries()) {
+      nodes.push({
+        id: entryId,
+        type: 'entry',
+        content: entry.content.slice(0, 120),
+        domain: entry.domain,
+        tags: entry.tags,
+        submittedBy: entry.submittedBy,
+        inftTokenId: entry.inftTokenId?.toString(),
+        queryCount: entry.queriedByAgents?.length ?? 0,
+      })
+
+      // Agent node for submitter
+      if (entry.submittedBy) {
+        if (!agentsSeen.has(entry.submittedBy)) {
+          agentsSeen.add(entry.submittedBy)
+          nodes.push({ id: entry.submittedBy, type: 'agent' })
+        }
+        edges.push({ source: entry.submittedBy, target: entryId, type: 'submitted', weight: 1 })
+      }
+
+      // Semantic similarity edges between entries
+      for (const [targetId, score] of Object.entries(entry.edges ?? {})) {
+        if (entryId < targetId) { // deduplicate — only emit each pair once
+          edges.push({ source: entryId, target: targetId, type: 'similar', weight: score })
+        }
+      }
+
+      // Agent→Entry edges for querying agents
+      for (const agent of entry.queriedByAgents ?? []) {
+        if (!agentsSeen.has(agent)) {
+          agentsSeen.add(agent)
+          nodes.push({ id: agent, type: 'agent' })
+        }
+        edges.push({ source: agent, target: entryId, type: 'queried', weight: 0.5 })
+      }
+    }
+
+    res.json({ nodes, edges, entryCount: cache.size, agentCount: agentsSeen.size })
   })
 
   // ─── POST /distribute ────────────────────────────────────────────────────
