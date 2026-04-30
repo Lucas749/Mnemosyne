@@ -95,30 +95,80 @@ You challenge a bad entry
 
 ## Architecture
 
+Four infrastructure layers working together:
+
 ```
- Agents / Humans
-       │ stake + submit
-       ▼
- MnemosyneRegistry — entry lifecycle (pending → active → contested → burned)
-                     ERC-7857 iNFT minted on activation
-       │
-       ├── StakeVault        — holds all ETH stakes
-       ├── ChallengeManager  — open / vote / resolve disputes
-       ├── ValidatorRegistry — tier tracking, reputation, panel sampling
-       └── RoyaltyVault      — accumulates query fees, distributes to authors
-                                    │
-                         Decentralized storage
-                    (content blobs + embedding vectors)
-                                    │
-                         ENS text records
-                    (memory.index → manifest, payment.token)
-                                    │
-                    Mnemosyne REST API  ←── OpenClaw agents (SKILL.md)
-                    (packages/api)      ←── Python agents (LangChain / LlamaIndex)
-                                    │
-                    Automated keeper network (6 jobs — fully autonomous)
-                    P2P encrypted validator coordination
+┌─────────────────────────────────────────────────────────────────┐
+│  0G NETWORK                                                     │
+│                                                                 │
+│  0G Storage ── encrypted knowledge blobs + embedding vectors    │
+│                (AES-256-GCM, only key-holder can decrypt)       │
+│                                                                 │
+│  0G Compute ── LLM inference for claim verification             │
+│                (TEE-attested verdicts: uphold / overturn)       │
+│                                                                 │
+│  0G Chain ───  Smart contracts                                  │
+│    MnemosyneRegistry  — entry lifecycle, staking                │
+│    MnemosyneINFT      — ERC-7857 iNFT, one per knowledge entry  │
+│    StakeVault         — ETH stakes locked here                  │
+│    ChallengeManager   — dispute resolution + validator votes     │
+│    RoyaltyVault       — query fee accounting ledger (A0GI)      │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│  ENS (Sepolia)                                                  │
+│                                                                 │
+│  Every agent has an ENS name:  agent.mnemosyne.eth              │
+│    memory.index  → root hash of agent's knowledge manifest      │
+│    payment.token → preferred ERC-20 for royalty payouts         │
+│                                                                 │
+│  Agent B discovers Agent A's brain:                             │
+│    GET /load-from-ens/agentA.eth                                │
+│    → resolves memory.index → loads manifest → warm cache        │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│  UNISWAP (Ethereum / Sepolia)                  weekly cycle     │
+│                                                                 │
+│  RoyaltyVault proportions (A0GI earned on 0G)                   │
+│    → POST /distribute                                           │
+│    → reads payment.token from each contributor's ENS            │
+│    → Uniswap Trading API: ETH → contributor's preferred token   │
+│    → payout lands in contributor's wallet                       │
+└─────────────────────────────────────────────────────────────────┘
 ```
+
+### How ENS fits in
+
+ENS is the **identity and discovery layer**. Every agent gets a name. That name carries two text records that make the whole system self-describing:
+
+- `memory.index` — points to the agent's knowledge manifest on 0G Storage. Any other agent can call `GET /load-from-ens/agentA.eth` to load that brain into their query cache instantly.
+- `payment.token` — the ERC-20 contract address the contributor wants royalties paid in. Set it once; Uniswap handles the rest on every distribution cycle.
+
+Without ENS, agents are anonymous addresses. With it, knowledge is attributable, discoverable, and composable across agents.
+
+### How Uniswap fits in
+
+Uniswap is the **payout layer**. Knowledge earns fees denominated in A0GI (0G native) in the `RoyaltyVault`. On a weekly distribution cycle:
+
+1. `RoyaltyVault.claimable[addr]` is read for each contributor (on 0G — the accounting source of truth)
+2. `POST /distribute` is called with those proportions
+3. For each contributor: reads their `payment.token` from ENS → Uniswap Trading API quotes and executes ETH → preferred token swap → payout delivered on Sepolia
+
+Contributors set their token preference once via ENS and receive royalties in whatever token they want — USDC, WBTC, anything Uniswap routes — without touching A0GI or 0G tooling directly.
+
+### Weekly reward cycle
+
+```
+Every query   → small A0GI fee deposited to RoyaltyVault (proportional to matches)
+               → UsageAuthorized(iNFT, executor) event on-chain
+
+Weekly        → POST /distribute reads vault proportions
+               → Uniswap swaps ETH → contributor's preferred token
+               → payouts land in contributor wallets on Sepolia
+```
+
+Royalties follow the iNFT, not the original submitter. If you sell your knowledge iNFT, the new owner inherits the royalty stream from that point forward.
 
 ---
 
@@ -127,26 +177,25 @@ You challenge a bad entry
 ```
 OpenAgents/
 ├── packages/
-│   ├── contracts/          ✅ Solidity (Foundry) — 14/14 tests passing
+│   ├── contracts/          ✅ Solidity (Foundry) — deployed v4 on 0G-Galileo
+│   │   ├── MnemosyneINFT.sol      — ERC-7857: authorizeUsage + encryptedURI
+│   │   ├── MnemosyneRegistry.sol  — entry lifecycle, owner-settable challenge window
 │   │   ├── StakeVault.sol
-│   │   ├── MnemosyneRegistry.sol  (+ ERC-7857 iNFT)
 │   │   ├── ChallengeManager.sol
-│   │   ├── ValidatorRegistry.sol
-│   │   └── RoyaltyVault.sol
+│   │   └── RoyaltyVault.sol       — accounting ledger, weekly Uniswap distribution
 │   │
-│   ├── storage/            ✅ Decentralized blob storage — upload/download + manifests
-│   ├── compute/            ✅ AI inference — embedding generation + TEE-attested verification
+│   ├── storage/            ✅ AES-256-GCM encrypted blobs + embeddings on 0G Storage
+│   ├── compute/            ✅ Local embeddings (Xenova) + 0G Compute for verification
+│   ├── identity/           ✅ ENS — memory.index, payment.token, subname registration
+│   ├── payments/           ✅ Uniswap Trading API — ETH → any token royalty routing
 │   ├── openclaw/           ✅ OpenClaw SKILL.md + TypeScript MemoryAdapter
-│   ├── api/                ✅ REST API — POST /store, POST /query, POST /load-manifest
-│   │
-│   ├── identity/           🔲 ENS subnames + memory.index text records
-│   ├── payments/           🔲 Token-agnostic royalty routing
-│   ├── keepers/            🔲 6 automated keeper jobs
-│   ├── p2p/                🔲 P2P encrypted validator coordination
-│   ├── example-agent/      🔲 End-to-end demo agent
-│   └── frontend/           🔲 Knowledge base explorer (see DESIGN.md)
+│   ├── api/                ✅ REST API — /store, /query, /distribute, /load-from-ens
+│   ├── example-agent/      ✅ End-to-end TypeScript demo
+│   ├── keepers/            🔲 Keeper network (inline keeper in API for now)
+│   ├── p2p/                🔲 P2P validator coordination
+│   └── frontend/           🔲 Knowledge explorer (see DESIGN.md)
 │
-├── mnemosyne-py/           ✅ Python — LangChain + LlamaIndex adapters
+├── mnemosyne-py/           ✅ Python — LangChain + LlamaIndex adapters + demo
 └── shared/types/           ✅ All TypeScript types
 ```
 
