@@ -331,7 +331,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         // Scale vault A0GI proportions to Sepolia ETH pool (1:1 ratio for demo)
         entries = Array.from(submitterMap.entries())
           .filter(([, addr]) => vaultBalances.has(addr))
-          .map(([ensName, addr]) => ({ ensName, amountWei: vaultBalances.get(addr)! }))
+          .map(([ensName, addr]) => ({ ensName, address: addr, amountWei: vaultBalances.get(addr)! }))
       } else {
         // Fallback: no vault balances — use 1 ROYALTY_WEI per cached entry
         const totals = new Map<string, bigint>()

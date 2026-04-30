@@ -14,6 +14,10 @@ const REGISTRY_ABI = parseAbi([
   'function recordQuery(bytes32 entryId, uint256 royaltyAmount) external',
   'function activateEntry(bytes32 entryId) external',
   'function getEntry(bytes32 entryId) external view returns (tuple(bytes32 id, string storageRef, string embeddingRef, string[] tags, uint8 domain, address submitter, uint256 stakeAmount, uint8 status, uint256 submittedAt, uint256 challengeWindowEnd, uint256 queryCount, uint256 royaltiesEarned, uint256 lastQueriedAt, uint256 inftTokenId))',
+  'function getProfile(address user) external view returns (tuple(address paymentToken, string ensName, uint256 totalEntries, uint256 totalQueries, uint256 totalRoyalties))',
+  'function getSubmitterEntries(address submitter) external view returns (bytes32[])',
+  'function getAllEntries(uint256 offset, uint256 limit) external view returns (bytes32[])',
+  'function getTotalEntryCount() external view returns (uint256)',
   'event EntryActivated(bytes32 indexed entryId, uint256 inftTokenId)',
 ])
 
@@ -71,8 +75,9 @@ export async function readVaultClaimable(addresses: `0x${string}`[]): Promise<Ma
 }
 
 export interface DistributeEntry {
-  ensName: string     // contributor's ENS name (has payment.token on Sepolia)
-  amountWei: bigint   // how much to route
+  ensName: string              // contributor's ENS name
+  amountWei: bigint            // how much to route
+  address?: `0x${string}`     // contributor's address — used to read on-chain paymentToken
 }
 
 export interface DistributeResult {
@@ -101,11 +106,31 @@ export async function distributeViaUniswap(
 
   const results: DistributeResult[] = []
 
+  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  const c        = clients()
+  const results: DistributeResult[] = []
+
   for (const entry of entries) {
+    // Prefer on-chain paymentToken (setProfile) — ENS payment.token is fallback
+    let overrideTokenOut: string | undefined
+    if (c && registry && entry.address) {
+      const profile = await c.pub.readContract({
+        address: registry,
+        abi: REGISTRY_ABI,
+        functionName: 'getProfile',
+        args: [entry.address as `0x${string}`],
+      }).catch(() => null) as { paymentToken: string } | null
+      const zero = '0x0000000000000000000000000000000000000000'
+      if (profile?.paymentToken && profile.paymentToken !== zero) {
+        overrideTokenOut = profile.paymentToken
+      }
+    }
+
     const { txHash, tokenOut, method } = await routeRoyalty(pk, entry.ensName, entry.amountWei, {
       chainId,
       rpcUrl,
       ensRpcUrl: ensRpc,
+      ...(overrideTokenOut && { overrideTokenOut }),
     })
     results.push({ ensName: entry.ensName, txHash, tokenOut, method })
   }

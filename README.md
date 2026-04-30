@@ -232,15 +232,15 @@ python mnemosyne-py/example_agent.py
 | `agent.mnemosyne.eth` create | `0x635944f407919924991de660b8840491d2947515f172250b6431962ec6075a4b` |
 | `demo.mnemosyne.eth` create | `0x170272dbbaa6fd3acafebc3fadf06a3194f40bcc303a3a30ff11781d1cb2d0f9` |
 
-## Deployed contracts (0G-Galileo-Testnet, chain 16602) — v4
+## Deployed contracts (0G-Galileo-Testnet, chain 16602) — v5
 
-v4: owner-settable `challengeWindow` via `setChallengeWindow(seconds)`. Starts at 5 min for testnet demos; call with `48 * 3600` for production. Full iNFT feature set: `authorizeUsage`, AES-256-GCM encrypted blobs, royalties routed to current iNFT owner.
+v5: `UserProfile` on-chain — contributors call `setProfile(paymentToken, ensName)` to declare their preferred payout token. Entry indexes (`getAllEntries`, `getSubmitterEntries`) for frontend enumeration. Aggregate per-user stats (`totalQueries`, `totalRoyalties`) updated on every query. Royalty distribution reads on-chain `paymentToken` first, falls back to ENS `payment.token`.
 
 | Contract | Address |
 |---|---|
-| `StakeVault` | `0x36d60d5c1e42996b5a423e6806b3569da4267466` |
-| `MnemosyneINFT` | `0x2f61af4fce58492a02f79063cded56c2f2a43379` |
-| `MnemosyneRegistry` | `0x868f671edb62d340e248986f06af323daad0a841` |
-| `ValidatorRegistry` | `0xf5d495488b5a59dcd268a8b6cf5222356bf9a25c` |
-| `ChallengeManager` | `0x49a015714d5cedb3507b0ce4ff12915061f79bc1` |
-| `RoyaltyVault` | `0x301763bc8edb79b62190b914d485f94ba63545d7` |
+| `StakeVault` | `0xa98f69ed695c770ae43ee94013542e0beef57050` |
+| `MnemosyneINFT` | `0x192f1fd574095c9199cfd409e97bd5437ced0589` |
+| `MnemosyneRegistry` | `0x9d8125a2e095006d08f75212c7384de232f3976e` |
+| `ValidatorRegistry` | `0xe2ec905a9795550bd848b5d06b60a1096aabb735` |
+| `ChallengeManager` | `0xeebd30236210b925b2f9383fd64a335bbcb75047` |
+| `RoyaltyVault` | `0x8d99824535ab8f95fcf4d8ea8e80ad6eda1bef5b` |

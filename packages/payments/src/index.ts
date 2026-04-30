@@ -10,7 +10,8 @@ export interface SwapParams {
   tokenIn: string
   tokenOut: string
   amount: string        // wei string
-  swapper: string       // wallet address
+  swapper: string       // wallet that holds ETH and signs the tx
+  recipient?: string    // where output tokens land (defaults to swapper)
   chainId?: number
   slippageTolerance?: number
 }
@@ -56,7 +57,7 @@ async function post(path: string, body: unknown): Promise<unknown> {
 
 /** Get a quote for a swap from the Uniswap Trading API. */
 export async function getQuote(params: SwapParams): Promise<QuoteResult> {
-  const body = {
+  const body: Record<string, unknown> = {
     tokenIn: params.tokenIn,
     tokenOut: params.tokenOut,
     tokenInChainId: params.chainId ?? 1,
@@ -65,6 +66,9 @@ export async function getQuote(params: SwapParams): Promise<QuoteResult> {
     amount: params.amount,
     swapper: params.swapper,
     slippageTolerance: params.slippageTolerance ?? 0.5,
+  }
+  if (params.recipient && params.recipient !== params.swapper) {
+    body.recipient = params.recipient
   }
   const data = await post('/quote', body) as any
   return {
@@ -97,7 +101,7 @@ export async function swapETHForToken(
   privateKey: `0x${string}`,
   tokenOut: string,
   amountWei: bigint,
-  recipient: string,
+  recipientAddress: `0x${string}`,  // where output tokens land — must be resolved address, not ENS
   options: { chainId?: number; rpcUrl?: string } = {},
 ): Promise<SwapResult> {
   const chainId = options.chainId ?? 1
@@ -108,13 +112,13 @@ export async function swapETHForToken(
     transport: http(options.rpcUrl ?? process.env.ETH_RPC_URL),
     account,
   })
-  const pub = createPublicClient({ chain, transport: http(options.rpcUrl ?? process.env.ETH_RPC_URL) })
 
   const { routing, quote, permitData } = await getQuote({
     tokenIn: ETH_ADDRESS,
     tokenOut,
     amount: amountWei.toString(),
-    swapper: account.address,
+    swapper: account.address,    // API wallet signs + pays ETH
+    recipient: recipientAddress, // contributor receives the output token directly
     chainId,
   })
 
@@ -156,32 +160,31 @@ export async function routeRoyalty(
   privateKey: `0x${string}`,
   contributorEnsName: string,
   amountWei: bigint,
-  options: { chainId?: number; rpcUrl?: string; ensRpcUrl?: string } = {},
+  options: { chainId?: number; rpcUrl?: string; ensRpcUrl?: string; overrideTokenOut?: string } = {},
 ): Promise<{ txHash: `0x${string}`; tokenOut: string; method: 'swap' | 'eth' }> {
-  const paymentToken = await getPaymentToken(contributorEnsName, {
+  const chainId = options.chainId ?? 1
+  const chain   = chainId === 11155111 ? sepolia : mainnet
+  const rpcUrl  = options.rpcUrl ?? process.env.ETH_RPC_URL
+  const account = privateKeyToAccount(privateKey)
+  const wallet  = createWalletClient({ chain, transport: http(rpcUrl), account })
+  const pub     = createPublicClient({ chain, transport: http(rpcUrl) })
+
+  // Resolve ENS → address first (needed for both swap recipient and ETH send)
+  const recipientAddress = await pub.getEnsAddress({ name: contributorEnsName }).catch(() => null)
+  if (!recipientAddress) throw new Error(`Could not resolve ${contributorEnsName} to an address`)
+
+  // Determine payment token: override (on-chain profile) > ENS payment.token > ETH
+  const paymentToken = options.overrideTokenOut ?? await getPaymentToken(contributorEnsName, {
     ...(options.ensRpcUrl && { rpcUrl: options.ensRpcUrl }),
   })
 
   if (paymentToken) {
-    const result = await swapETHForToken(privateKey, paymentToken, amountWei, contributorEnsName, options)
+    // Swap: API wallet pays ETH → tokens land directly in contributor's wallet
+    const result = await swapETHForToken(privateKey, paymentToken, amountWei, recipientAddress, options)
     return { txHash: result.txHash, tokenOut: paymentToken, method: 'swap' }
   }
 
-  // No token preference — send ETH directly
-  const account = privateKeyToAccount(privateKey)
-  const chainId = options.chainId ?? 1
-  const chain   = chainId === 11155111 ? sepolia : mainnet
-  const wallet  = createWalletClient({
-    chain,
-    transport: http(options.rpcUrl ?? process.env.ETH_RPC_URL),
-    account,
-  })
-
-  // Resolve ENS name to address for direct ETH send
-  const pub = createPublicClient({ chain, transport: http(options.rpcUrl ?? process.env.ETH_RPC_URL) })
-  const address = await pub.getEnsAddress({ name: contributorEnsName }).catch(() => null)
-  if (!address) throw new Error(`Could not resolve ${contributorEnsName} to an address`)
-
-  const txHash = await wallet.sendTransaction({ to: address, value: amountWei })
+  // No token preference — send ETH directly to resolved address
+  const txHash = await wallet.sendTransaction({ to: recipientAddress, value: amountWei })
   return { txHash, tokenOut: ETH_ADDRESS, method: 'eth' }
 }
