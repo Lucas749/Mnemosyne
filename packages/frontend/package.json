@@ -9,17 +9,23 @@
   },
   "dependencies": {
     "@mnemosyne/types": "workspace:*",
+    "@tailwindcss/postcss": "^4.2.4",
     "@tanstack/react-query": "^5.100.5",
+    "@uiw/react-md-editor": "^4.1.0",
     "autoprefixer": "^10.5.0",
     "next": "15",
     "postcss": "^8.5.12",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-force-graph": "^1.48.2",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "tailwindcss": "^4.2.4",
     "viem": "^2.48.4",
     "wagmi": "^3.6.5"
   },
   "devDependencies": {
+    "@types/node": "^20.0.0",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "typescript": "6.0.3"
