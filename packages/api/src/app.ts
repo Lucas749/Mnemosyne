@@ -12,7 +12,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
 import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
@@ -139,7 +139,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         }
       }
 
-      cache.set(entryId, {
+      const cacheEntry = {
         content: body.content,
         vector: embBlob.vector,
         storageRef,
@@ -150,7 +150,12 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         challengeWindowEnd,
         edges,
         queriedByAgents: [],
-      })
+      }
+      cache.set(entryId, cacheEntry)
+      // Also index by on-chain entryId so /unlock works with the blockchain ID
+      if (onchainEntryId) {
+        cache.set(onchainEntryId, cacheEntry)
+      }
 
       let manifestRef: string | undefined
       const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
@@ -330,6 +335,47 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       paymentConfirmed: paymentOk,
       paymentTx: paymentTx ?? null,
     })
+  })
+
+  // ─── GET /content/:entryId ───────────────────────────────────────────────
+  // Fetch entry content from 0G Storage using the storageRef from chain.
+  // Works even after a server restart — reads storageRef from the blockchain,
+  // then downloads content from 0G and caches it for future requests.
+
+  app.get('/content/:entryId', async (req, res) => {
+    const entryId = req.params.entryId as `0x${string}`
+
+    // Cache hit (already loaded)
+    const cached = cache.get(entryId)
+    if (cached) {
+      res.json({ entryId, content: cached.content, tags: cached.tags, domain: cached.domain, submittedBy: cached.submittedBy })
+      return
+    }
+
+    // Read storageRef from the blockchain
+    const onChainEntry = await getEntryFromChain(entryId)
+    if (!onChainEntry) {
+      res.status(404).json({ error: 'Entry not found on chain' })
+      return
+    }
+
+    // Download content from 0G Storage
+    try {
+      const blob = await downloadEntryBlob(storage, onChainEntry.storageRef, entryId)
+      const entry: CachedEntry = {
+        content: blob.content,
+        vector: [],
+        storageRef: onChainEntry.storageRef,
+        tags: onChainEntry.tags,
+        domain: blob.domain,
+        submittedBy: blob.submittedBy,
+        onchainEntryId: entryId,
+      }
+      cache.set(entryId, entry)
+      res.json({ entryId, content: blob.content, tags: blob.tags, domain: blob.domain, submittedBy: blob.submittedBy })
+    } catch (err) {
+      res.status(502).json({ error: '0G Storage fetch failed', detail: (err as Error).message })
+    }
   })
 
   // ─── POST /load-manifest ─────────────────────────────────────────────────

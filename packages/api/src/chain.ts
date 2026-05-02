@@ -1,4 +1,4 @@
-import { createWalletClient, createPublicClient, http, defineChain, parseAbi } from 'viem'
+import { createWalletClient, createPublicClient, http, defineChain } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { routeRoyalty } from '@mnemosyne/payments'
 
@@ -9,37 +9,74 @@ const zgTestnet = defineChain({
   rpcUrls: { default: { http: ['https://evmrpc-testnet.0g.ai'] } },
 })
 
-const REGISTRY_ABI = parseAbi([
-  'function submit(string storageRef, string embeddingRef, string[] tags, uint8 domain) external payable returns (bytes32)',
-  'function recordQuery(bytes32 entryId, uint256 royaltyAmount) external',
-  'function activateEntry(bytes32 entryId) external',
-  'function getEntry(bytes32 entryId) external view returns (tuple(bytes32 id, string storageRef, string embeddingRef, string[] tags, uint8 domain, address submitter, uint256 stakeAmount, uint8 status, uint256 submittedAt, uint256 challengeWindowEnd, uint256 queryCount, uint256 royaltiesEarned, uint256 lastQueriedAt, uint256 inftTokenId))',
-  'function getProfile(address user) external view returns (tuple(address paymentToken, string ensName, uint256 totalEntries, uint256 totalQueries, uint256 totalRoyalties))',
-  'function getSubmitterEntries(address submitter) external view returns (bytes32[])',
-  'function getAllEntries(uint256 offset, uint256 limit) external view returns (bytes32[])',
-  'function getTotalEntryCount() external view returns (uint256)',
-  'event EntryActivated(bytes32 indexed entryId, uint256 inftTokenId)',
-])
+// JSON ABI format — parseAbi can't handle named tuple returns in this version of abitype
+const REGISTRY_ABI = [
+  { name: 'submit', type: 'function', stateMutability: 'payable',
+    inputs: [{ name: 'storageRef', type: 'string' }, { name: 'embeddingRef', type: 'string' }, { name: 'tags', type: 'string[]' }, { name: 'domain', type: 'uint8' }],
+    outputs: [{ type: 'bytes32' }] },
+  { name: 'recordQuery', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'entryId', type: 'bytes32' }, { name: 'royaltyAmount', type: 'uint256' }], outputs: [] },
+  { name: 'activateEntry', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'entryId', type: 'bytes32' }], outputs: [] },
+  { name: 'getEntry', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'entryId', type: 'bytes32' }],
+    outputs: [{ type: 'tuple', components: [
+      { name: 'id', type: 'bytes32' }, { name: 'storageRef', type: 'string' }, { name: 'embeddingRef', type: 'string' },
+      { name: 'tags', type: 'string[]' }, { name: 'domain', type: 'uint8' }, { name: 'submitter', type: 'address' },
+      { name: 'stakeAmount', type: 'uint256' }, { name: 'status', type: 'uint8' }, { name: 'submittedAt', type: 'uint256' },
+      { name: 'challengeWindowEnd', type: 'uint256' }, { name: 'queryCount', type: 'uint256' },
+      { name: 'royaltiesEarned', type: 'uint256' }, { name: 'lastQueriedAt', type: 'uint256' },
+      { name: 'inftTokenId', type: 'uint256' },
+    ] }] },
+  { name: 'getProfile', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ type: 'tuple', components: [
+      { name: 'paymentToken', type: 'address' }, { name: 'ensName', type: 'string' },
+      { name: 'totalEntries', type: 'uint256' }, { name: 'totalQueries', type: 'uint256' }, { name: 'totalRoyalties', type: 'uint256' },
+    ] }] },
+  { name: 'getSubmitterEntries', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'submitter', type: 'address' }], outputs: [{ type: 'bytes32[]' }] },
+  { name: 'getAllEntries', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'offset', type: 'uint256' }, { name: 'limit', type: 'uint256' }], outputs: [{ type: 'bytes32[]' }] },
+  { name: 'getTotalEntryCount', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'event', name: 'EntryActivated',
+    inputs: [{ name: 'entryId', type: 'bytes32', indexed: true }, { name: 'inftTokenId', type: 'uint256', indexed: false }] },
+] as const
 
-const VAULT_ABI = parseAbi([
-  'function depositQueryFee(address[] contributors, uint256[] shares) external payable',
-  'function claimable(address) external view returns (uint256)',
-])
+const VAULT_ABI = [
+  { name: 'depositQueryFee', type: 'function', stateMutability: 'payable',
+    inputs: [{ name: 'contributors', type: 'address[]' }, { name: 'shares', type: 'uint256[]' }], outputs: [] },
+  { name: 'claimable', type: 'function', stateMutability: 'view',
+    inputs: [{ type: 'address' }], outputs: [{ type: 'uint256' }] },
+] as const
 
-const INFT_ABI = parseAbi([
-  'function authorizeUsage(uint256 tokenId, address executor, bytes permissions) external',
-  'function ownerOf(uint256 tokenId) external view returns (address)',
-  'function approve(address to, uint256 tokenId) external',
-])
+const INFT_ABI = [
+  { name: 'authorizeUsage', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }, { name: 'executor', type: 'address' }, { name: 'permissions', type: 'bytes' }], outputs: [] },
+  { name: 'ownerOf', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'tokenId', type: 'uint256' }], outputs: [{ type: 'address' }] },
+  { name: 'approve', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'to', type: 'address' }, { name: 'tokenId', type: 'uint256' }], outputs: [] },
+] as const
 
-const MARKET_ABI = parseAbi([
-  'function listFor(uint256 tokenId, address seller, uint256 price) external',
-  'function buyFor(uint256 tokenId, address recipient) external payable',
-  'function cancel(uint256 tokenId) external',
-  'function updatePrice(uint256 tokenId, uint256 newPrice) external',
-  'function listings(uint256 tokenId) external view returns (address seller, uint256 price, bool active)',
-  'function getActiveListings() external view returns (uint256[] tokenIds, tuple(address seller, uint256 price, bool active)[] lst)',
-])
+const MARKET_ABI = [
+  { name: 'listFor', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }, { name: 'seller', type: 'address' }, { name: 'price', type: 'uint256' }], outputs: [] },
+  { name: 'buyFor', type: 'function', stateMutability: 'payable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }, { name: 'recipient', type: 'address' }], outputs: [] },
+  { name: 'cancel', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }], outputs: [] },
+  { name: 'updatePrice', type: 'function', stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }, { name: 'newPrice', type: 'uint256' }], outputs: [] },
+  { name: 'listings', type: 'function', stateMutability: 'view',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [{ name: 'seller', type: 'address' }, { name: 'price', type: 'uint256' }, { name: 'active', type: 'bool' }] },
+  { name: 'getActiveListings', type: 'function', stateMutability: 'view', inputs: [],
+    outputs: [
+      { name: 'tokenIds', type: 'uint256[]' },
+      { name: 'lst', type: 'tuple[]', components: [{ name: 'seller', type: 'address' }, { name: 'price', type: 'uint256' }, { name: 'active', type: 'bool' }] },
+    ] },
+] as const
 
 const DOMAIN_INDEX: Record<string, number> = {
   factual:          0,
@@ -113,8 +150,6 @@ export async function distributeViaUniswap(
   const chainId  = parseInt(process.env.ROYALTY_CHAIN_ID ?? '1')
   const rpcUrl   = process.env.ETH_RPC_URL
   const ensRpc   = process.env.SEPOLIA_RPC
-
-  const results: DistributeResult[] = []
 
   const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
   const c        = clients()
@@ -205,6 +240,25 @@ export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigi
   // topics[2] is the inftTokenId (2nd indexed arg)
   const tokenIdHex = receipt.logs[0]?.topics[2]
   return tokenIdHex ? BigInt(tokenIdHex) : null
+}
+
+/**
+ * Read a full Entry struct from the registry on-chain.
+ */
+export async function getEntryFromChain(entryId: `0x${string}`): Promise<{
+  storageRef: string; embeddingRef: string; tags: string[]; domain: number
+  submitter: `0x${string}`; stakeAmount: bigint; status: number; inftTokenId: bigint
+} | null> {
+  const c = clients()
+  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  if (!c || !registry) return null
+  try {
+    return await c.pub.readContract({
+      address: registry, abi: REGISTRY_ABI, functionName: 'getEntry', args: [entryId],
+    }) as any
+  } catch {
+    return null
+  }
 }
 
 /**
