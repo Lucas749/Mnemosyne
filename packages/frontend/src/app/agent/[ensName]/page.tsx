@@ -6,11 +6,13 @@ import { useParams } from 'next/navigation'
 import { useReadContracts } from 'wagmi'
 import { Tag, WikiInfoBox, BtnPrimary, BtnGhost } from '@/components/design-system'
 import { T } from '@/components/design-system'
-import { KnowledgeGraphCanvas } from '@/components/knowledge-graph'
+import { MnemosyneForceGraph } from '@/components/force-graph'
+import type { FgNode, FgLink } from '@/hooks/use-graph-data'
 import {
   REGISTRY_ADDRESS, REGISTRY_ABI, ROYALTY_VAULT_ADDRESS, ROYALTY_VAULT_ABI,
   STATUS_LABELS, DOMAIN_LABELS,
 } from '@/lib/contracts'
+import { useWriteContract } from 'wagmi'
 import { zgTestnet } from '@/lib/chains'
 import { resolveEnsAddress, resolveAddressToEns, getEnsText, formatA0GI, truncateAddress } from '@/lib/ens'
 import { loadFromEns } from '@/lib/api'
@@ -74,6 +76,35 @@ export default function AgentPage() {
 
   const totalStaked = entries.reduce((sum, e) => sum + e.stakeAmount, 0n)
   const verifiedCount = entries.filter(e => e.status === 1).length
+
+  const { writeContract, isPending: claimPending } = useWriteContract()
+  const [claimTx, setClaimTx] = useState<string | null>(null)
+
+  function handleClaim() {
+    writeContract(
+      { address: ROYALTY_VAULT_ADDRESS, abi: ROYALTY_VAULT_ABI, functionName: 'claim', chainId: zgTestnet.id },
+      {
+        onSuccess(hash) { setClaimTx(hash) },
+      }
+    )
+  }
+
+  const miniNodes: FgNode[] = address ? [
+    { id: address, type: 'agent' },
+    ...entries.map(e => ({
+      id: e.id,
+      type: 'entry' as const,
+      domainIdx: e.domain,
+      domainLabel: DOMAIN_LABELS[e.domain] ?? 'unknown',
+      queryCount: Number(e.queryCount),
+      status: e.status,
+    })),
+  ] : []
+  const miniLinks: FgLink[] = entries.map(e => ({
+    source: address!,
+    target: e.id,
+    type: 'submitted' as const,
+  }))
 
   async function handleLoadMemory() {
     setLoadStatus('loading...')
@@ -216,7 +247,7 @@ export default function AgentPage() {
               CONTRIBUTION GRAPH
             </div>
             <div style={{ height: 140 }}>
-              <KnowledgeGraphCanvas mini={true} />
+              <MnemosyneForceGraph nodes={miniNodes} links={miniLinks} height={140} mini />
             </div>
           </div>
 
@@ -227,6 +258,16 @@ export default function AgentPage() {
             <Link href="/marketplace" style={{ textDecoration: 'none' }}>
               <BtnGhost style={{ width: '100%', textAlign: 'center' }}>VIEW iNFTs</BtnGhost>
             </Link>
+            {(claimable ?? 0n) > 0n && (
+              <BtnPrimary onClick={handleClaim} disabled={claimPending} style={{ width: '100%', textAlign: 'center', background: T.success }}>
+                {claimPending ? 'CLAIMING...' : `CLAIM ${formatA0GI(claimable!)} A0GI →`}
+              </BtnPrimary>
+            )}
+            {claimTx && (
+              <div style={{ fontSize: 9, color: T.success, fontFamily: T.codeFont, wordBreak: 'break-all' }}>
+                ✓ {claimTx.slice(0, 22)}...
+              </div>
+            )}
           </div>
         </div>
       </div>

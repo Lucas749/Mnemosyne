@@ -124,6 +124,34 @@ export const MARKET_ABI = [
       },
     ],
   },
+  {
+    name: 'listItem',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }, { name: 'price', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'buyItem',
+    type: 'function',
+    stateMutability: 'payable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'cancelListing',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'updatePrice',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'tokenId', type: 'uint256' }, { name: 'newPrice', type: 'uint256' }],
+    outputs: [],
+  },
 ] as const
 
 export const ROYALTY_VAULT_ABI = [
@@ -133,6 +161,13 @@ export const ROYALTY_VAULT_ABI = [
     stateMutability: 'view',
     inputs: [{ name: '', type: 'address' }],
     outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'claim',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: [],
   },
 ] as const
 

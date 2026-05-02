@@ -70,6 +70,7 @@ export default function ChallengePage() {
 
   const openChallenges = challenges.filter(c => c.status < 3)
   const resolvedChallenges = challenges.filter(c => c.status >= 3)
+  const myChallenges = challenges.filter(c => address && c.challenger.toLowerCase() === address.toLowerCase())
 
   const ch = openChallenges[selected]
 
@@ -232,17 +233,42 @@ export default function ChallengePage() {
 
       {activeTab === 'mine' && (
         <div style={{ maxWidth: 680 }}>
-          {address ? (
-            <div style={{ fontSize: 11, color: T.muted }}>
-              Challenges filed by {address.slice(0, 10)}... will appear here.
+          {!address ? (
+            <div style={{ background: T.warningBg, border: `1px solid ${T.tagBorder}`, borderRadius: 3, padding: '12px 18px', fontSize: 11, color: T.warning }}>
+              ⚠ Connect your wallet to view your challenges.
+            </div>
+          ) : myChallenges.length === 0 ? (
+            <div style={{ fontSize: 11, color: T.muted, padding: '16px 0' }}>
+              No challenges filed by {address.slice(0, 10)}... on-chain.
             </div>
           ) : (
-            <>
-              <div style={{ background: T.warningBg, border: `1px solid ${T.tagBorder}`, borderRadius: 3, padding: '12px 18px', marginBottom: 20, fontSize: 11, color: T.warning }}>
-                ⚠ Connect your wallet to view your challenges.
-              </div>
-              <BtnPrimary>CONNECT WALLET</BtnPrimary>
-            </>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+              {myChallenges.map(c => {
+                const total = Number(c.upholdVotes + c.overturnVotes)
+                const upholdPct = total > 0 ? Number(c.upholdVotes) / total : 0
+                return (
+                  <div key={c.id} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 4, padding: '16px 20px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontSize: 9, fontWeight: 700, color: STATUS_COLOR[c.status] ?? T.muted, letterSpacing: '0.1em' }}>
+                        {CHALLENGE_STATUS_LABELS[c.status]}
+                      </span>
+                      <span style={{ fontSize: 9, color: T.muted }}>{c.id.slice(0, 14)}...</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: T.accent, marginBottom: 8, cursor: 'pointer' }}>
+                      Entry: {c.entryId.slice(0, 20)}...
+                    </div>
+                    <div style={{ fontSize: 10, color: T.text, marginBottom: 12, lineHeight: 1.6 }}>"{c.reason}"</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{ flex: 1, height: 4, background: T.faint, borderRadius: 2, overflow: 'hidden' }}>
+                        <div style={{ width: `${upholdPct * 100}%`, height: '100%', background: T.success }} />
+                      </div>
+                      <span style={{ fontSize: 9, color: T.success }}>↑{c.upholdVotes.toString()}</span>
+                      <span style={{ fontSize: 9, color: T.danger }}>↓{c.overturnVotes.toString()}</span>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
           )}
         </div>
       )}

@@ -6,7 +6,7 @@ import { useParams } from 'next/navigation'
 import { useReadContracts } from 'wagmi'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { KnowledgeGraphCanvas } from '@/components/knowledge-graph'
+import { MnemosyneForceGraph } from '@/components/force-graph'
 import { Tag, WikiInfoBox, Modal, BtnPrimary, BtnGhost } from '@/components/design-system'
 import { T } from '@/components/design-system'
 import {
@@ -18,10 +18,14 @@ import { unlockEntry } from '@/lib/api'
 import { resolveAddressToEns, formatA0GI, truncateAddress } from '@/lib/ens'
 import { useAccount } from 'wagmi'
 import { parseEther, formatEther } from 'viem'
+import { useGraphData } from '@/hooks/use-graph-data'
+import { useRouter } from 'next/navigation'
 
 export default function EntryPage() {
   const { entryId } = useParams<{ entryId: string }>()
   const { address } = useAccount()
+  const router = useRouter()
+  const { nodes: graphNodes, links: graphLinks } = useGraphData(20)
 
   const [activeTab, setActiveTab] = useState<'read' | 'history' | 'discuss' | 'onchain'>('read')
   const [showChallenge, setShowChallenge] = useState(false)
@@ -239,7 +243,7 @@ export default function EntryPage() {
               {[
                 { label: 'CHALLENGE ENTRY', primary: false, action: () => setShowChallenge(true) },
                 ...(entry.inftTokenId > 0n ? [
-                  { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => {} },
+                  { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => router.push('/marketplace') },
                 ] : []),
                 { label: 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(`https://chainscan-galileo.0g.ai`, '_blank') },
               ].map(btn => (
@@ -255,10 +259,15 @@ export default function EntryPage() {
 
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, overflow: 'hidden' }}>
               <div style={{ background: T.faint, padding: '8px 14px', borderBottom: `1px solid ${T.border}`, fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: T.text }}>
-                ENTRY MAP
+                DOMAIN MAP — {domainLabel.toUpperCase()}
               </div>
               <div style={{ height: 150 }}>
-                <KnowledgeGraphCanvas mini={true} />
+                <MnemosyneForceGraph
+                  nodes={graphNodes.filter(n => n.type === 'agent' || n.domainIdx === entry.domain)}
+                  links={graphLinks}
+                  height={150}
+                  mini
+                />
               </div>
             </div>
           </div>
