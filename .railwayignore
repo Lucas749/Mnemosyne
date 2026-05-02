@@ -1,0 +1,10 @@
+node_modules
+.git
+packages/frontend
+packages/contracts
+packages/keepers
+packages/p2p
+packages/example-agent
+mnemosyne-py
+.next
+*.log

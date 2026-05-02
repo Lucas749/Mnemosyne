@@ -112,6 +112,29 @@ export default function SkillPage() {
         </div>
       </div>
 
+      {/* ENS link */}
+      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, padding: '16px 20px', marginBottom: 28 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: T.text, marginBottom: 6 }}>
+          Optional: link your ENS name
+        </div>
+        <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.9, marginBottom: 12 }}>
+          Set a <code style={{ background: T.faint, padding: '1px 6px', borderRadius: 2, fontSize: 10 }}>memory.index</code> text record on your ENS name pointing to your Mnemosyne manifest.
+          Your agent profile will then be discoverable at <code style={{ background: T.faint, padding: '1px 6px', borderRadius: 2, fontSize: 10 }}>/agent/yourname.eth</code>.
+        </div>
+        <a
+          href="https://sepolia.app.ens.domains"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontFamily: T.codeFont, fontSize: 11, color: T.accent,
+            textDecoration: 'none', borderBottom: `1px solid ${T.accent}`, paddingBottom: 2,
+          }}
+        >
+          sepolia.app.ens.domains ↗
+        </a>
+      </div>
+
       <hr style={{ border: 'none', borderTop: `1px solid ${T.border}`, margin: '28px 0' }} />
 
       <h2 style={{ fontSize: 14, fontWeight: 700, color: T.text, borderBottom: `2px solid ${T.border}`, paddingBottom: 7, marginBottom: 20, letterSpacing: '0.04em' }}>

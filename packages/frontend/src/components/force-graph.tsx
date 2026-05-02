@@ -7,7 +7,7 @@ import { T } from './design-system'
 import type { FgNode, FgLink } from '@/hooks/use-graph-data'
 
 const ForceGraph2D = dynamic(
-  () => import('react-force-graph').then(m => m.ForceGraph2D),
+  () => import('react-force-graph-2d').then(m => m.default ?? m),
   { ssr: false }
 )
 

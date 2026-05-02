@@ -8,6 +8,7 @@ import { T } from '@/components/design-system'
 import { REGISTRY_ADDRESS, REGISTRY_ABI, DOMAIN_LABELS } from '@/lib/contracts'
 import { zgTestnet } from '@/lib/chains'
 import { useGraphData, type FgNode } from '@/hooks/use-graph-data'
+import { entryEns } from '@/lib/entry-name'
 
 const EVENT_ICONS: Record<string, string> = {
   EntrySubmitted: '●', EntryActivated: '◆', QueryRecorded: '▶',
@@ -144,7 +145,7 @@ export default function HomePage() {
                   }}>
                     <span style={{ fontSize: 12, color: T.muted, width: 18, flexShrink: 0 }}>#{i + 1}</span>
                     <span style={{ fontSize: 12, color: T.accent, flex: 1 }}>
-                      {entry.id.slice(0, 28)}...
+                      {entryEns(entry.id)}
                     </span>
                     <Tag>{entry.domainLabel ?? 'unknown'}</Tag>
                     <span style={{ fontSize: 10, color: T.muted, width: 60, textAlign: 'right' }}>
@@ -194,8 +195,8 @@ export default function HomePage() {
 
       <div style={{ marginTop: 40, paddingTop: 16, borderTop: `1px solid ${T.border}` }}>
         <span style={{ fontSize: 9, color: T.muted, letterSpacing: '0.1em', marginRight: 12 }}>DOMAINS:</span>
-        {DOMAIN_LABELS.map(d => (
-          <span key={d} style={{ fontSize: 10, color: T.accent, marginRight: 16, cursor: 'pointer' }}>{d}</span>
+        {['Economics', 'Cryptography', 'Architecture', 'AI / ML', 'Blockchain', 'Protocol', 'Governance'].map(d => (
+          <Link key={d} href={`/explore?tag=${d.split(' ')[0].toUpperCase()}`} style={{ fontSize: 10, color: T.accent, marginRight: 16, textDecoration: 'none' }}>{d}</Link>
         ))}
       </div>
       <div style={{ marginTop: 12, fontSize: 9, color: T.muted }}>

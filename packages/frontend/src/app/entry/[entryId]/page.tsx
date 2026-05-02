@@ -16,6 +16,7 @@ import {
 import { zgTestnet } from '@/lib/chains'
 import { unlockEntry } from '@/lib/api'
 import { resolveAddressToEns, formatA0GI, truncateAddress } from '@/lib/ens'
+import { entryEns } from '@/lib/entry-name'
 import { useAccount } from 'wagmi'
 import { parseEther, formatEther } from 'viem'
 import { useGraphData } from '@/hooks/use-graph-data'
@@ -71,6 +72,12 @@ export default function EntryPage() {
   }, [entry?.submitter])
 
   useEffect(() => {
+    if (entry && content === null && !unlocking) {
+      handleUnlock()
+    }
+  }, [entry?.id])
+
+  useEffect(() => {
     if (!entry) return
     const windowEnd = Number(entry.challengeWindowEnd) * 1000
     if (windowEnd < Date.now()) return
@@ -93,16 +100,28 @@ export default function EntryPage() {
     try {
       const result = await unlockEntry(entryId, address ?? 'anonymous')
       setContent(result.content)
-    } catch (e: unknown) {
-      const err = e as { code?: number; message?: string }
-      if (err.code === 402) {
-        setUnlockError('Payment required. Wallet transaction not yet supported in this build.')
-      } else {
-        setUnlockError(err.message ?? 'Unlock failed — /unlock API not yet available')
-      }
-    } finally {
       setUnlocking(false)
+      return
+    } catch {
+      // /unlock not available, fall through to direct storage fetch
     }
+
+    // Try GET /content/:entryId — reads storageRef from chain and fetches from 0G
+    try {
+      const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
+      const res = await fetch(`${API}/content/${entryId}`)
+      if (res.ok) {
+        const data = await res.json()
+        setContent(data.content)
+        setUnlocking(false)
+        return
+      }
+    } catch {
+      // content endpoint failed too
+    }
+
+    setUnlockError('Content stored on 0G Storage — loading failed. Storage node may be unavailable.')
+    setUnlocking(false)
   }
 
   const tabs = [
@@ -112,6 +131,7 @@ export default function EntryPage() {
     { id: 'onchain' as const, label: 'ON-CHAIN' },
   ]
 
+  const ensName = entryEns(entryId)
   const statusLabel = entry ? STATUS_LABELS[entry.status] ?? 'UNKNOWN' : '—'
   const statusColor = entry ? STATUS_COLORS[entry.status] ?? T.muted : T.muted
   const domainLabel = entry ? DOMAIN_LABELS[entry.domain] ?? 'unknown' : '—'
@@ -122,6 +142,7 @@ export default function EntryPage() {
   const challengeCount = challengeCountData?.[0]?.result?.toString() ?? '0'
 
   const infoRows: [string, React.ReactNode][] = entry ? [
+    ['Name', <span key="ens" style={{ color: T.accent, fontWeight: 700 }}>{ensName}</span>],
     ['Submitted', submitterDisplay],
     ['Address', truncateAddress(entry.submitter)],
     ['Stake', `${stakeFormatted} A0GI`],
@@ -160,7 +181,7 @@ export default function EntryPage() {
 
   const titleText = content
     ? content.split('\n')[0].replace(/^#+ /, '')
-    : `Entry ${entryId.slice(0, 10)}...`
+    : ensName
 
   return (
     <div style={{ padding: '0 40px 40px', maxWidth: 1060, margin: '0 auto', fontFamily: T.codeFont }}>
@@ -208,18 +229,16 @@ export default function EntryPage() {
               </div>
             ) : (
               <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, padding: '24px', textAlign: 'center', marginBottom: 24 }}>
-                <div style={{ fontSize: 12, color: T.muted, marginBottom: 16 }}>
-                  Content is encrypted on 0G Storage. Unlock to read.
-                </div>
-                {unlockError && (
-                  <div style={{ fontSize: 11, color: T.danger, marginBottom: 12 }}>{unlockError}</div>
+                {unlockError ? (
+                  <>
+                    <div style={{ fontSize: 11, color: T.danger, marginBottom: 12 }}>{unlockError}</div>
+                    <BtnPrimary onClick={handleUnlock} disabled={unlocking}>RETRY →</BtnPrimary>
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: T.muted }}>
+                    {unlocking ? 'Loading content from 0G Storage...' : 'Loading...'}
+                  </div>
                 )}
-                <BtnPrimary onClick={handleUnlock} disabled={unlocking}>
-                  {unlocking ? 'UNLOCKING...' : 'UNLOCK CONTENT →'}
-                </BtnPrimary>
-                <div style={{ fontSize: 9, color: T.muted, marginTop: 10 }}>
-                  Requires /unlock API · royalty payment goes to iNFT owner
-                </div>
               </div>
             )}
 
@@ -245,7 +264,7 @@ export default function EntryPage() {
                 ...(entry.inftTokenId > 0n ? [
                   { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => router.push('/marketplace') },
                 ] : []),
-                { label: 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(`https://chainscan-galileo.0g.ai`, '_blank') },
+                { label: 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(`https://chainscan-galileo.0g.ai/address/${REGISTRY_ADDRESS}`, '_blank') },
               ].map(btn => (
                 <button key={btn.label} onClick={btn.action} style={{
                   display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px',

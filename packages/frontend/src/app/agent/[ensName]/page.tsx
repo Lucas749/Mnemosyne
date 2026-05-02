@@ -12,6 +12,7 @@ import {
   REGISTRY_ADDRESS, REGISTRY_ABI, ROYALTY_VAULT_ADDRESS, ROYALTY_VAULT_ABI,
   STATUS_LABELS, DOMAIN_LABELS,
 } from '@/lib/contracts'
+import { entryEns } from '@/lib/entry-name'
 import { useWriteContract } from 'wagmi'
 import { zgTestnet } from '@/lib/chains'
 import { resolveEnsAddress, resolveAddressToEns, getEnsText, formatA0GI, truncateAddress } from '@/lib/ens'
@@ -35,9 +36,16 @@ export default function AgentPage() {
   const [loadStatus, setLoadStatus] = useState<string | null>(null)
   const [resolving, setResolving] = useState(true)
 
+  const isRawAddress = /^0x[0-9a-fA-F]{40}$/.test(decodedEns)
+
   useEffect(() => {
     async function resolve() {
       setResolving(true)
+      if (isRawAddress) {
+        setAddress(decodedEns as `0x${string}`)
+        setResolving(false)
+        return
+      }
       const [addr, mi, pt] = await Promise.all([
         resolveEnsAddress(decodedEns),
         getEnsText(decodedEns, 'memory.index'),
@@ -128,9 +136,24 @@ export default function AgentPage() {
   if (!address) {
     return (
       <div style={{ padding: '32px 40px', fontFamily: T.codeFont }}>
-        <div style={{ fontSize: 12, color: T.danger }}>
+        <div style={{ fontSize: 12, color: T.danger, marginBottom: 16 }}>
           ENS name "{decodedEns}" could not be resolved on Sepolia testnet.
         </div>
+        <div style={{ fontSize: 11, color: T.muted, lineHeight: 2 }}>
+          Agent profiles use ENS names registered on Sepolia. To register one:
+        </div>
+        <a
+          href="https://sepolia.app.ens.domains"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 12,
+            fontFamily: T.codeFont, fontSize: 11, color: T.accent,
+            textDecoration: 'none', borderBottom: `1px solid ${T.accent}`, paddingBottom: 2,
+          }}
+        >
+          sepolia.app.ens.domains ↗
+        </a>
       </div>
     )
   }
@@ -153,7 +176,7 @@ export default function AgentPage() {
         <div style={{ flex: 1 }}>
           <div style={{ fontSize: 10, color: T.muted, marginBottom: 8, letterSpacing: '0.08em' }}>AGENT PROFILE</div>
           <h1 style={{ fontSize: 26, fontWeight: 700, color: T.text, margin: '0 0 6px', borderBottom: `1px solid ${T.border}`, paddingBottom: 8 }}>
-            {decodedEns}
+            {isRawAddress ? truncateAddress(decodedEns as `0x${string}`) : decodedEns}
           </h1>
           <div style={{ fontSize: 11, color: T.muted }}>
             {truncateAddress(address)} · 0G-Galileo · {entries.length} entries
@@ -193,7 +216,7 @@ export default function AgentPage() {
                   <div style={{ display: 'flex', gap: 16, padding: '14px 0', borderBottom: `1px solid ${T.borderLight}`, cursor: 'pointer', alignItems: 'center' }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ fontSize: 12, color: T.accent, marginBottom: 6 }}>
-                        {e.id.slice(0, 20)}...
+                        {entryEns(e.id)}
                       </div>
                       <div style={{ display: 'flex', gap: 6 }}>
                         {e.tags.slice(0, 3).map(tag => <Tag key={tag}>{tag}</Tag>)}
@@ -222,19 +245,37 @@ export default function AgentPage() {
           )}
 
           {tab === 'nfts' && (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
-              {entries.filter(e => e.inftTokenId > 0n).map(e => (
-                <div key={e.id} style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 4, padding: '14px 16px' }}>
-                  <div style={{ fontSize: 9, color: T.muted, marginBottom: 6 }}>iNFT #{e.inftTokenId.toString()}</div>
-                  <div style={{ fontSize: 11, color: T.text, marginBottom: 10, lineHeight: 1.5 }}>
-                    {e.id.slice(0, 20)}...
-                  </div>
-                  <div style={{ fontSize: 10, color: T.accent, fontWeight: 700 }}>{formatA0GI(e.stakeAmount)} A0GI staked</div>
-                </div>
-              ))}
-              {entries.filter(e => e.inftTokenId > 0n).length === 0 && (
-                <div style={{ fontSize: 11, color: T.muted }}>No minted iNFTs yet.</div>
-              )}
+            <div>
+              <div style={{ fontSize: 10, color: T.muted, marginBottom: 16, lineHeight: 1.8 }}>
+                Every submitted entry is a Knowledge iNFT — a staked, tradeable fact with royalty rights.
+                {entries.some(e => e.inftTokenId > 0n) && ' Token IDs are assigned when entries are verified.'}
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 14 }}>
+                {entries.map(e => (
+                  <Link key={e.id} href={`/entry/${e.id}`} style={{ textDecoration: 'none' }}>
+                    <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 4, padding: '14px 16px', cursor: 'pointer' }}
+                      onMouseEnter={ev => (ev.currentTarget.style.borderColor = T.accent)}
+                      onMouseLeave={ev => (ev.currentTarget.style.borderColor = T.border)}
+                    >
+                      {e.inftTokenId > 0n && (
+                        <div style={{ fontSize: 9, color: T.muted, marginBottom: 4 }}>iNFT #{e.inftTokenId.toString()}</div>
+                      )}
+                      <div style={{ fontSize: 12, color: T.accent, fontWeight: 700, marginBottom: 6 }}>
+                        {entryEns(e.id)}
+                      </div>
+                      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: 8 }}>
+                        {e.tags.slice(0, 3).map(t => (
+                          <span key={t} style={{ fontSize: 8, color: T.muted, background: T.faint, border: `1px solid ${T.borderLight}`, borderRadius: 2, padding: '1px 5px' }}>{t}</span>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 10, color: T.accent, fontWeight: 700 }}>{formatA0GI(e.stakeAmount)} A0GI</div>
+                      <div style={{ fontSize: 9, color: e.status === 1 ? T.success : T.warning, marginTop: 4 }}>
+                        {STATUS_LABELS[e.status] ?? 'PENDING'}
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
             </div>
           )}
         </div>
@@ -269,6 +310,22 @@ export default function AgentPage() {
               </div>
             )}
           </div>
+
+          <a
+            href="https://sepolia.app.ens.domains"
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+              padding: '9px 12px', background: T.faint,
+              border: `1px solid ${T.border}`, borderRadius: 3,
+              fontFamily: T.codeFont, fontSize: 9, letterSpacing: '0.08em',
+              color: T.muted, textDecoration: 'none',
+            }}
+          >
+            <span>MANAGE ENS NAME</span>
+            <span style={{ color: T.accent }}>↗</span>
+          </a>
         </div>
       </div>
 

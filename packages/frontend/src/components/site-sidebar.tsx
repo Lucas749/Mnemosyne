@@ -24,19 +24,20 @@ const sections = [
   {
     heading: 'DOMAINS',
     items: [
-      { label: 'Economics' },
-      { label: 'Cryptography' },
-      { label: 'Protocol' },
-      { label: 'History' },
-      { label: 'Governance' },
-      { label: 'Science' },
+      { label: 'Economics',     href: '/explore?tag=ECONOMICS' },
+      { label: 'Cryptography',  href: '/explore?tag=CRYPTOGRAPHY' },
+      { label: 'Architecture',  href: '/explore?tag=ARCHITECTURE' },
+      { label: 'AI / ML',       href: '/explore?tag=AI' },
+      { label: 'Blockchain',    href: '/explore?tag=BLOCKCHAIN' },
+      { label: 'Protocol',      href: '/explore?tag=PROTOCOL' },
+      { label: 'Governance',    href: '/explore?tag=GOVERNANCE' },
     ],
   },
   {
     heading: 'TOOLS',
     items: [
       { label: '0G Explorer ↗', href: 'https://chainscan-galileo.0g.ai', ext: true },
-      { label: 'ENS Lookup ↗', href: 'https://app.ens.domains', ext: true },
+      { label: 'ENS (Sepolia) ↗', href: 'https://sepolia.app.ens.domains', ext: true },
     ],
   },
 ]
