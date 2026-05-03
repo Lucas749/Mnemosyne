@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useReadContracts, useAccount } from 'wagmi'
 import { parseEther, formatEther } from 'viem'
@@ -10,7 +10,7 @@ import { REGISTRY_ADDRESS, REGISTRY_ABI, STATUS_LABELS } from '@/lib/contracts'
 import { zgTestnet } from '@/lib/chains'
 import { entryEns } from '@/lib/entry-name'
 import { formatA0GI } from '@/lib/ens'
-import { fetchMarketListings, buyListing, listForSale, cancelListing } from '@/lib/api'
+import { fetchMarketListings, buyListing, listForSale, cancelListing, fetchAttributedEntryIds } from '@/lib/api'
 
 type Listing = {
   tokenId: string
@@ -37,6 +37,7 @@ export default function MarketplacePage() {
   const [txHash, setTxHash] = useState<string | null>(null)
   const [txError, setTxError] = useState<string | null>(null)
   const [activating, setActivating] = useState<string | null>(null)
+  const [attributedIds, setAttributedIds] = useState<string[]>([])
   const [listings, setListings] = useState<Listing[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [isError, setIsError] = useState(false)
@@ -50,15 +51,44 @@ export default function MarketplacePage() {
   })
   const myEntryIds = walletEntryIds?.[0]?.result as `0x${string}`[] | undefined
 
+  useEffect(() => {
+    if (!address) {
+      setAttributedIds([])
+      return
+    }
+    fetchAttributedEntryIds(address)
+      .then(setAttributedIds)
+      .catch(() => setAttributedIds([]))
+  }, [address])
+
+  const mergedEntryIds = useMemo(() => {
+    const combined = [...(myEntryIds ?? []), ...(attributedIds as `0x${string}`[])]
+    const seen = new Set<string>()
+    const out: `0x${string}`[] = []
+    for (const id of combined) {
+      const k = String(id).toLowerCase()
+      if (seen.has(k)) continue
+      seen.add(k)
+      out.push(id as `0x${string}`)
+    }
+    return out.slice(0, 40)
+  }, [myEntryIds, attributedIds])
+
   const { data: myEntriesData } = useReadContracts({
-    contracts: (myEntryIds ?? []).slice(0, 20).map(id => ({
+    contracts: mergedEntryIds.slice(0, 30).map(id => ({
       address: REGISTRY_ADDRESS, abi: REGISTRY_ABI,
       functionName: 'getEntry', args: [id], chainId: zgTestnet.id,
     })),
   })
   const myEntries: EntryData[] = (myEntriesData ?? [])
-    .map(d => d.result as unknown as EntryData)
-    .filter(Boolean)
+    .map((d, i) => {
+      const raw = d.result as unknown as (EntryData & { id?: `0x${string}` }) | undefined
+      if (!raw) return raw
+      const id = raw.id ?? mergedEntryIds[i]
+      if (!id) return raw
+      return { ...raw, id }
+    })
+    .filter(Boolean) as EntryData[]
 
   const loadListings = async () => {
     setIsLoading(true)
@@ -84,16 +114,26 @@ export default function MarketplacePage() {
 
   async function handleActivate(entryId: string) {
     setActivating(entryId)
+    setTxError(null)
     try {
-      const res = await fetch(`${API}/activate/${entryId}`, { method: 'POST' })
-      const data = await res.json()
+      const res = await fetch(`${API}/activate/${encodeURIComponent(entryId)}`, { method: 'POST' })
+      const data = await res.json() as {
+        inftTokenId?: string
+        error?: string
+        detail?: string
+      }
+      if (!res.ok) {
+        setTxError(data.detail || data.error || `Activate failed (${res.status})`)
+        return
+      }
       if (data.inftTokenId && data.inftTokenId !== '0') {
         setTxHash(`Activated — iNFT #${data.inftTokenId}`)
+        window.location.reload()
       } else {
-        setTxError('Activation returned no token ID — challenge window may not have passed yet.')
+        setTxError('Activation returned no token ID — challenge window may not have ended, or keeper not authorized on registry.')
       }
     } catch (e) {
-      setTxError('Activation request failed')
+      setTxError((e as Error).message ?? 'Activation request failed')
     } finally {
       setActivating(null)
     }

@@ -14,7 +14,7 @@ import {
   ROYALTY_VAULT_ADDRESS, ROYALTY_VAULT_ABI, STATUS_LABELS, STATUS_COLORS, DOMAIN_LABELS,
 } from '@/lib/contracts'
 import { zgTestnet } from '@/lib/chains'
-import { unlockEntry } from '@/lib/api'
+import { unlockEntry, activateEntryMint } from '@/lib/api'
 import { resolveAddressToEns, formatA0GI, truncateAddress } from '@/lib/ens'
 import { entryEns } from '@/lib/entry-name'
 import { useAccount, useWriteContract } from 'wagmi'
@@ -49,6 +49,8 @@ export default function EntryPage() {
   const [challengeError, setChallengeError] = useState<string | null>(null)
   const [challengeTxHash, setChallengeTxHash] = useState<string | null>(null)
   const [countdown, setCountdown] = useState('')
+  const [mintWorking, setMintWorking] = useState(false)
+  const [mintErr, setMintErr] = useState<string | null>(null)
 
   // Discussion state
   const [discussions, setDiscussions] = useState<{id: number; author: string; content: string; createdAt?: number; created_at?: number}[]>([])
@@ -247,6 +249,23 @@ export default function EntryPage() {
   const challengeCount = challengeCountData?.[0]?.result?.toString() ?? '0'
   const hasChainData   = !!entry
 
+  const challengeWindowOpen = !!(entry && Number(entry.challengeWindowEnd) * 1000 > Date.now())
+  const canMintInft =
+    !!(entry && entry.status === 0 && entry.inftTokenId === 0n && !challengeWindowOpen)
+
+  async function handleMintKnowledgeInft() {
+    setMintWorking(true)
+    setMintErr(null)
+    try {
+      await activateEntryMint(entryId)
+      window.location.reload()
+    } catch (e) {
+      setMintErr((e as Error).message ?? 'Mint request failed')
+    } finally {
+      setMintWorking(false)
+    }
+  }
+
   const infoRows: [string, React.ReactNode][] = [
     ['Name',
       <a key="ens" href={entryEnsUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, fontWeight: 700, textDecoration: 'none' }}>
@@ -363,6 +382,12 @@ export default function EntryPage() {
               footer={footer}
             />
 
+            {canMintInft && (
+              <div style={{ marginBottom: 18, padding: '10px 12px', background: T.faint, border: `1px solid ${T.border}`, borderRadius: 3, fontSize: 10, color: T.muted, lineHeight: 1.5 }}>
+                Stake locked on-chain. After the challenge window, request mint to finalize the Knowledge iNFT (activated by the Mnemosyne API using the authorized operator wallet).
+              </div>
+            )}
+
             {content ? (
               <div className="prose-mnemosyne">
                 <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
@@ -400,20 +425,35 @@ export default function EntryPage() {
                 ACTIONS
               </div>
               {[
-                { label: 'CHALLENGE ENTRY', primary: false, action: () => setShowChallenge(true) },
+                { label: 'CHALLENGE ENTRY', primary: false, action: () => setShowChallenge(true), disabled: false },
+                ...(canMintInft
+                  ? [{
+                      label: mintWorking ? 'MINTING...' : 'MINT KNOWLEDGE iNFT',
+                      primary: true,
+                      action: handleMintKnowledgeInft,
+                      disabled: mintWorking,
+                    }]
+                  : []),
                 ...(entry && entry.inftTokenId > 0n ? [
-                  { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => router.push('/marketplace') },
+                  { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => router.push('/marketplace'), disabled: false },
                 ] : []),
-                { label: submitTxUrl ? 'VIEW SUBMISSION TX ↗' : 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(submitTxUrl ?? `https://chainscan-galileo.0g.ai/address/${REGISTRY_ADDRESS}`, '_blank') },
+                { label: submitTxUrl ? 'VIEW SUBMISSION TX ↗' : 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(submitTxUrl ?? `https://chainscan-galileo.0g.ai/address/${REGISTRY_ADDRESS}`, '_blank'), disabled: false },
               ].map(btn => (
-                <button key={btn.label} onClick={btn.action} style={{
+                <button key={btn.label} onClick={btn.action} disabled={btn.disabled} style={{
                   display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px',
                   background: btn.primary ? T.accentLight : 'none',
                   border: 'none', borderBottom: `1px solid ${T.borderLight}`,
                   fontFamily: T.codeFont, fontSize: 10, letterSpacing: '0.06em',
-                  color: btn.primary ? T.accent : T.muted, cursor: 'pointer',
+                  color: btn.disabled ? T.muted : btn.primary ? T.accent : T.muted,
+                  cursor: btn.disabled ? 'default' : 'pointer',
+                  opacity: btn.disabled ? 0.6 : 1,
                 }}>{btn.label}</button>
               ))}
+              {mintErr ? (
+                <div style={{ padding: '10px 14px', fontSize: 10, color: T.danger, borderTop: `1px solid ${T.borderLight}` }}>
+                  {mintErr}
+                </div>
+              ) : null}
             </div>
 
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, overflow: 'hidden' }}>

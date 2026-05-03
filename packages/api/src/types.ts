@@ -5,6 +5,8 @@ export interface StoreRequest {
   domain?: EntryDomain
   tags?: string[]
   submittedBy?: string
+  /** Wallet that attributed the submission (shown in marketplace). On-chain submitter remains API operator. */
+  attributionWallet?: string
 }
 
 export interface StoreResponse {
