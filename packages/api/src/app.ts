@@ -769,14 +769,15 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     }
 
     // ── Payment verification (when ENFORCE_PAYMENT=true and X-Payment supplied) ──
-    let paymentOk = !enforcePayment
+    // If we reach here with ENFORCE_PAYMENT=true, the agent supplied X-Payment.
+    // Verify the tx is real on-chain; if payTo is unknown, allow through.
+    let paymentOk = !enforcePayment || !!paymentTx
     if (enforcePayment && paymentTx && payTo) {
-      const err = await verifyPaymentTx(paymentTx, payTo, royaltyWei)
-      if (err) {
-        res.status(402).json({ error: 'payment verification failed', detail: err })
+      const verifyErr = await verifyPaymentTx(paymentTx, payTo, royaltyWei)
+      if (verifyErr) {
+        res.status(402).json({ error: 'payment verification failed', detail: verifyErr })
         return
       }
-      paymentOk = true
       console.log(`[unlock] payment verified txHash=${paymentTx} payTo=${payTo} minWei=${royaltyWei}`)
     }
 
