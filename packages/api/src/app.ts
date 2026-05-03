@@ -667,7 +667,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     )
 
     ;(async () => {
-      const queryEmb = await Promise.race([generateEmbedding(compute, '__query__', body.text), timeout])
+      const queryEmb = await Promise.race([generateEmbedding(null as any, '__query__', body.text), timeout])
 
       let entries = Array.from(cache.entries())
       if (domains && domains.length > 0) {
