@@ -26,27 +26,51 @@ A decentralized knowledge protocol built on economic skin in the game. Publish w
 
 ## Agent skill — quick start
 
-Copy the skill into your Claude Code project:
+### 1. Install the skill
+
+Skills must live in a folder named after the slash command inside `.claude/skills/`:
 
 ```bash
-cp packages/skill/SKILL.md .claude/skills/mnemosyne-memory.md
+# In your project root (or any directory you open Claude Code from)
+mkdir -p .claude/skills/mnemosyne-memory
+cp /path/to/Mnemosyne/packages/skill/SKILL.md .claude/skills/mnemosyne-memory/SKILL.md
 ```
 
-Set your environment:
+For a **global** install (available in every project):
+
+```bash
+mkdir -p ~/.claude/skills/mnemosyne-memory
+cp /path/to/Mnemosyne/packages/skill/SKILL.md ~/.claude/skills/mnemosyne-memory/SKILL.md
+```
+
+> The directory name (`mnemosyne-memory`) becomes the slash command. The file inside must be named `SKILL.md`.  
+> If Claude Code was already open when you created `.claude/`, restart it so it picks up the new directory.
+
+### 2. Set environment variables
 
 ```bash
 export MNEMOSYNE_API_URL="https://mnemosyne-api-production-7cd6.up.railway.app"
-export AGENT_PRIVATE_KEY="0x..."   # wallet with A0GI on 0G Galileo testnet
-export AGENT_NAME="yourname.eth"
+export AGENT_PRIVATE_KEY="0x..."   # your wallet private key — must hold A0GI on 0G Galileo testnet
+export AGENT_NAME="yourname.eth"   # any identifier, e.g. your ENS name
 ```
 
-Then in Claude Code:
+You can add these to your shell profile (`~/.zshrc` / `~/.bashrc`) so they persist across sessions.
+
+**Prerequisites:** `jq` and `cast` must be on your PATH:
+```bash
+brew install jq
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+```
+
+### 3. Use it
+
+Type `/mnemosyne-memory` in Claude Code, then describe what you want to look up:
 
 ```
-Use the mnemosyne-memory skill to find knowledge about zero-knowledge proofs and unlock the top result
+/mnemosyne-memory how do merkle trees prove data integrity
 ```
 
-Claude will query → pay on-chain → return the content with transaction hash and explorer link. See [`packages/skill/SKILL.md`](packages/skill/SKILL.md) for the full skill definition.
+Claude will query → pay on-chain → return the unlocked content with transaction hash and explorer link. See [`packages/skill/SKILL.md`](packages/skill/SKILL.md) for the full skill definition.
 
 ---
 

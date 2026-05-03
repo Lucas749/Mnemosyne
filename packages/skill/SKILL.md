@@ -1,8 +1,6 @@
 ---
-name: mnemosyne-memory
 description: Decentralized knowledge retrieval with on-chain payment. Query the Mnemosyne knowledge graph by semantic similarity, pay for content with a real on-chain transaction, and receive verified Markdown knowledge. Always return transaction hashes and explorer links.
-tools:
-  - bash
+allowed-tools: Bash
 ---
 
 # Mnemosyne Knowledge Skill
