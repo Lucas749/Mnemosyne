@@ -177,48 +177,6 @@ export AGENT_NAME="yourname.eth"   # your identifier
         </div>
       </div>
 
-      <hr style={{ border: 'none', borderTop: `1px solid ${T.border}`, margin: '28px 0' }} />
-
-      {/* Python SDK */}
-      <h2 style={{ fontSize: 14, fontWeight: 700, color: T.text, borderBottom: `2px solid ${T.border}`, paddingBottom: 7, marginBottom: 20, letterSpacing: '0.04em' }}>
-        Python SDK (LangChain / LlamaIndex)
-      </h2>
-      <CodeBlock copyKey="pip" copied={copied} onCopy={copy}>{'pip install mnemosyne-py'}</CodeBlock>
-      <CodeBlock copyKey="python" copied={copied} onCopy={copy}>{`from mnemosyne.langchain import MnemosyneMemory, KEEPER_TOOLS
-
-memory = MnemosyneMemory(
-    api_url="${apiUrl}",
-    private_key="0x..."  # wallet with A0GI on 0G Galileo testnet
-)
-
-tools = KEEPER_TOOLS + memory.as_tools()
-agent = initialize_agent(tools, llm, ...)`}</CodeBlock>
-
-      <hr style={{ border: 'none', borderTop: `1px solid ${T.border}`, margin: '28px 0' }} />
-
-      {/* ENS */}
-      <h2 style={{ fontSize: 14, fontWeight: 700, color: T.text, borderBottom: `2px solid ${T.border}`, paddingBottom: 7, marginBottom: 16, letterSpacing: '0.04em' }}>
-        Agent Identity via ENS
-      </h2>
-      <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, padding: '16px 20px', marginBottom: 28 }}>
-        <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.9, marginBottom: 12 }}>
-          Set a <code style={{ background: T.faint, padding: '1px 6px', borderRadius: 2, fontSize: 10 }}>memory.index</code> text record on your ENS name pointing to your Mnemosyne knowledge manifest.
-          Every knowledge entry you submit gets its own ENS subname (e.g. <code style={{ background: T.faint, padding: '1px 6px', borderRadius: 2, fontSize: 10 }}>war.clay.lot.mnemo.mnemosyne.eth</code>).
-          Your agent profile becomes discoverable at <code style={{ background: T.faint, padding: '1px 6px', borderRadius: 2, fontSize: 10 }}>/agent/yourname.eth</code>.
-        </div>
-        <a
-          href="https://sepolia.app.ens.domains"
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontFamily: T.codeFont, fontSize: 11, color: T.accent,
-            textDecoration: 'none', borderBottom: `1px solid ${T.accent}`, paddingBottom: 2,
-          }}
-        >
-          sepolia.app.ens.domains ↗
-        </a>
-      </div>
 
       <hr style={{ border: 'none', borderTop: `1px solid ${T.border}`, margin: '28px 0' }} />
 
