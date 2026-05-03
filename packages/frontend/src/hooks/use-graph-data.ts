@@ -1,10 +1,11 @@
 'use client'
 
-import { useMemo } from 'react'
-import { useReadContracts } from 'wagmi'
-import { REGISTRY_ADDRESS, REGISTRY_ABI, DOMAIN_LABELS } from '@/lib/contracts'
-import { zgTestnet } from '@/lib/chains'
+import { useState, useEffect } from 'react'
+import { DOMAIN_LABELS } from '@/lib/contracts'
 
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
+
+// Keep OnChainEntry for backward compat (entry page still uses wagmi for chain reads)
 export type OnChainEntry = {
   id: `0x${string}`
   storageRef: string
@@ -49,75 +50,71 @@ export type GraphBundle = {
   loading: boolean
 }
 
-export function useGraphData(limit = 60): GraphBundle {
-  const { data: countData } = useReadContracts({
-    contracts: [{ address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: 'getTotalEntryCount', chainId: zgTestnet.id }],
-  })
-  const total = countData?.[0]?.result as bigint | undefined
-  const fetchLimit = total !== undefined ? (total > BigInt(limit) ? BigInt(limit) : total) : undefined
+type ApiEntry = {
+  entryId: string
+  content: string | null
+  tags: string[]
+  domain: string | null
+  submitter: string | null
+  storageRef: string | null
+}
 
-  const { data: idsData } = useReadContracts({
-    contracts: fetchLimit !== undefined ? [
-      { address: REGISTRY_ADDRESS, abi: REGISTRY_ABI, functionName: 'getAllEntries', args: [0n, fetchLimit], chainId: zgTestnet.id },
-    ] : [],
-  })
-  const entryIds = idsData?.[0]?.result as `0x${string}`[] | undefined
+const DOMAIN_INDEX: Record<string, number> = {
+  factual: 0, labeled_example: 1, structured_data: 2, observation: 3, correction: 4,
+}
 
-  const { data: entriesData, isLoading } = useReadContracts({
-    contracts: (entryIds ?? []).map(id => ({
-      address: REGISTRY_ADDRESS, abi: REGISTRY_ABI,
-      functionName: 'getEntry', args: [id], chainId: zgTestnet.id,
-    })),
-  })
+export function useGraphData(_limit = 60): GraphBundle {
+  const [nodes, setNodes] = useState<FgNode[]>([])
+  const [links, setLinks] = useState<FgLink[]>([])
+  const [loading, setLoading] = useState(true)
 
-  const entries: OnChainEntry[] = (entriesData ?? [])
-    .map(d => d.result as unknown as OnChainEntry)
-    .filter(Boolean)
+  useEffect(() => {
+    fetch(`${API}/entries`)
+      .then(r => r.json())
+      .then((data: ApiEntry[]) => {
+        const valid = data.filter(e => e.content)
+        const nodeList: FgNode[] = []
+        const linkList: FgLink[] = []
+        const agentsSeen = new Set<string>()
 
-  const { nodes, links } = useMemo(() => {
-    if (entries.length === 0) return { nodes: [], links: [] }
+        valid.forEach(e => {
+          const domainIdx = DOMAIN_INDEX[e.domain ?? ''] ?? 0
+          nodeList.push({
+            id: e.entryId,
+            type: 'entry',
+            domainIdx,
+            domainLabel: e.domain ?? 'unknown',
+            queryCount: 0,
+            status: 0,
+            tags: e.tags,
+            submitter: e.submitter ?? undefined,
+          })
 
-    const nodes: FgNode[] = []
-    const links: FgLink[] = []
-    const agentIds = new Set<string>()
+          if (e.submitter) {
+            const agentId = e.submitter.toLowerCase()
+            if (!agentsSeen.has(agentId)) {
+              agentsSeen.add(agentId)
+              nodeList.push({ id: agentId, type: 'agent' })
+            }
+            linkList.push({ source: agentId, target: e.entryId, type: 'submitted' })
+          }
+        })
 
-    entries.forEach(e => {
-      nodes.push({
-        id: e.id,
-        type: 'entry',
-        domainIdx: e.domain,
-        domainLabel: DOMAIN_LABELS[e.domain] ?? 'unknown',
-        queryCount: Number(e.queryCount),
-        status: e.status,
-        tags: e.tags,
-        submitter: e.submitter,
-      })
-
-      const agentId = e.submitter.toLowerCase()
-      if (!agentIds.has(agentId)) {
-        agentIds.add(agentId)
-        nodes.push({ id: agentId, type: 'agent' })
-      }
-
-      links.push({ source: agentId, target: e.id, type: 'submitted' })
-    })
-
-    // Connect entries with the same domain (similar edges)
-    for (let i = 0; i < entries.length; i++) {
-      for (let j = i + 1; j < entries.length; j++) {
-        if (entries[i].domain === entries[j].domain) {
-          links.push({ source: entries[i].id, target: entries[j].id, type: 'similar', value: 0.5 })
+        // Connect entries with same domain
+        for (let i = 0; i < valid.length; i++) {
+          for (let j = i + 1; j < valid.length; j++) {
+            if (valid[i].domain === valid[j].domain) {
+              linkList.push({ source: valid[i].entryId, target: valid[j].entryId, type: 'similar', value: 0.5 })
+            }
+          }
         }
-      }
-    }
 
-    return { nodes, links }
-  }, [entries])
+        setNodes(nodeList)
+        setLinks(linkList)
+        setLoading(false)
+      })
+      .catch(() => setLoading(false))
+  }, [])
 
-  return {
-    nodes,
-    links,
-    entries,
-    loading: isLoading && (total === undefined || fetchLimit !== undefined),
-  }
+  return { nodes, links, entries: [], loading }
 }

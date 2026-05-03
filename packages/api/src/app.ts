@@ -185,13 +185,13 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         cache.set(onchainEntryId, cacheEntry)
       }
 
-      // Persist full content to DB — use on-chain ID when available, local ID as fallback
-      const dbEntryId = onchainEntryId ?? entryId
-      upsertEntry(dbEntryId, {
+      // Always use the local random ID as DB primary key — the on-chain "entryId"
+      // returned by the contract is the ABI-encoded submitter address (not unique per entry)
+      upsertEntry(entryId, {
         storageRef, tags, domain, submitter: submittedBy,
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
       })
-      console.log(`[store] saved entryId=${dbEntryId} onchain=${!!onchainEntryId}`)
+      console.log(`[store] saved entryId=${entryId} onchain=${!!onchainEntryId}`)
 
       let manifestRef: string | undefined
       const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
@@ -212,8 +212,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         )
       }
 
-      // Return the on-chain ID if registration succeeded, otherwise the local ID
-      const result: StoreResponse = { entryId: onchainEntryId ?? entryId, storageRef, embeddingRef, manifestRef }
+      const result: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef }
       jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
     })().catch((err) => {
       console.error('[store] job failed:', err?.message ?? err)
