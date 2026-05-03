@@ -153,36 +153,40 @@ export async function fetchMarketListings(): Promise<{ listings: MarketListing[]
   return r.json()
 }
 
-export async function buyListing(tokenId: string, recipientAddress: string, priceWei: string): Promise<void> {
+export async function buyListing(tokenId: string, recipientAddress: string, priceWei: string): Promise<{ txHash: string }> {
   const r = await fetch(`${API}/market/buy`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tokenId, recipientAddress, priceWei }),
   })
   if (!r.ok) throw new Error('Market buy failed')
+  return r.json()
 }
 
-export async function listForSale(tokenId: string, sellerAddress: string, priceWei: string): Promise<void> {
+export async function listForSale(tokenId: string, sellerAddress: string, priceWei: string): Promise<{ txHash: string }> {
   const r = await fetch(`${API}/market/list`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ tokenId, sellerAddress, priceWei }),
   })
   if (!r.ok) throw new Error('Market list failed')
+  return r.json()
 }
 
-export async function cancelListing(tokenId: string): Promise<void> {
+export async function cancelListing(tokenId: string): Promise<{ txHash: string }> {
   const r = await fetch(`${API}/market/listing/${tokenId}`, { method: 'DELETE' })
   if (!r.ok) throw new Error('Cancel listing failed')
+  return r.json()
 }
 
-export async function updateListingPrice(tokenId: string, priceWei: string): Promise<void> {
+export async function updateListingPrice(tokenId: string, priceWei: string): Promise<{ txHash: string }> {
   const r = await fetch(`${API}/market/listing/${tokenId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ priceWei }),
   })
   if (!r.ok) throw new Error('Update price failed')
+  return r.json()
 }
 
 export async function loadFromEns(ensName: string): Promise<{ loaded: number; total: number; ensName: string; manifestRef: string }> {

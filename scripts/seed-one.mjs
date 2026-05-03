@@ -106,6 +106,12 @@ async function main() {
     console.log(`\n\x1b[33m✓ ENS memory.index updated\x1b[0m`)
     console.log(`  manifestRef: ${result.manifestRef}`)
     console.log(`  mnemosyne.eth text(memory.index) = ${result.manifestRef}`)
+    const loadCheck = await fetch(`${API}/load-from-ens/mnemosyne.eth`).then(r => r.json()).catch(() => null)
+    if (loadCheck?.error) {
+      console.log(`\x1b[31m✗ ENS bootstrap check failed: ${loadCheck.error}\x1b[0m`)
+    } else {
+      console.log(`\x1b[32m✓ ENS bootstrap check passed: loaded ${loadCheck?.loaded ?? 0}\x1b[0m`)
+    }
   } else {
     console.log(`\n\x1b[33m⚠  manifestRef missing — ENS update may have failed or ENS_PRIVATE_KEY not set\x1b[0m`)
   }

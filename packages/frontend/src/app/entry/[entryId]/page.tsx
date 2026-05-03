@@ -17,12 +17,14 @@ import { zgTestnet } from '@/lib/chains'
 import { unlockEntry } from '@/lib/api'
 import { resolveAddressToEns, formatA0GI, truncateAddress } from '@/lib/ens'
 import { entryEns } from '@/lib/entry-name'
-import { useAccount } from 'wagmi'
+import { useAccount, useWriteContract } from 'wagmi'
 import { parseEther, formatEther } from 'viem'
 import { useGraphData } from '@/hooks/use-graph-data'
 import { useRouter } from 'next/navigation'
 
 export default function EntryPage() {
+  const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+  const ZERO_BYTES32 = '0x0000000000000000000000000000000000000000000000000000000000000000'
   const { entryId } = useParams<{ entryId: string }>()
   const { address } = useAccount()
   const router = useRouter()
@@ -32,7 +34,7 @@ export default function EntryPage() {
   useEffect(() => setMounted(true), [])
 
   const [dbData, setDbData] = useState<{
-    content: string; tags: string[]; domain: string | null; submittedBy: string | null;
+    content: string; tags: string[]; domain: string | null; submittedBy: string | null; submitTxHash?: string | null;
   } | null>(null)
   const [dbLoading, setDbLoading] = useState(false)
 
@@ -44,13 +46,16 @@ export default function EntryPage() {
   const [submitterEns, setSubmitterEns] = useState<string | null>(null)
   const [challengeReason, setChallengeReason] = useState('')
   const [evidenceRef, setEvidenceRef] = useState('')
+  const [challengeError, setChallengeError] = useState<string | null>(null)
+  const [challengeTxHash, setChallengeTxHash] = useState<string | null>(null)
   const [countdown, setCountdown] = useState('')
 
   // Discussion state
-  const [discussions, setDiscussions] = useState<{id: number; author: string; content: string; created_at: number}[]>([])
+  const [discussions, setDiscussions] = useState<{id: number; author: string; content: string; createdAt?: number; created_at?: number}[]>([])
   const [discussLoading, setDiscussLoading] = useState(false)
   const [newComment, setNewComment] = useState('')
   const [postingComment, setPostingComment] = useState(false)
+  const { writeContract, isPending: openingChallenge } = useWriteContract()
 
   const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
 
@@ -84,6 +89,32 @@ export default function EntryPage() {
     }
   }
 
+  function handleOpenChallenge() {
+    if (!address || !challengeReason.trim()) return
+    setChallengeError(null)
+    writeContract(
+      {
+        address: CHALLENGE_ADDRESS,
+        abi: CHALLENGE_ABI,
+        functionName: 'openChallenge',
+        args: [entryIdBytes, challengeReason.trim(), evidenceRef.trim()],
+        value: parseEther('0.005'),
+        chainId: zgTestnet.id,
+      },
+      {
+        onSuccess(hash) {
+          setChallengeTxHash(hash)
+          setShowChallenge(false)
+          setChallengeReason('')
+          setEvidenceRef('')
+        },
+        onError(err) {
+          setChallengeError(err.message)
+        },
+      }
+    )
+  }
+
   const entryIdBytes = entryId as `0x${string}`
 
   const { data, isLoading } = useReadContracts({
@@ -92,12 +123,13 @@ export default function EntryPage() {
     ],
   })
 
-  const entry = data?.[0]?.result as {
+  const rawEntry = data?.[0]?.result as {
     id: `0x${string}`; storageRef: string; embeddingRef: string; tags: string[]
     domain: number; submitter: `0x${string}`; stakeAmount: bigint; status: number
     submittedAt: bigint; challengeWindowEnd: bigint; queryCount: bigint
     royaltiesEarned: bigint; lastQueriedAt: bigint; inftTokenId: bigint
   } | undefined
+  const entry = rawEntry && rawEntry.id !== ZERO_BYTES32 && rawEntry.submitter !== ZERO_ADDRESS ? rawEntry : undefined
 
   const { data: challengeCountData } = useReadContracts({
     contracts: entry ? [
@@ -194,7 +226,13 @@ export default function EntryPage() {
   ]
 
   const ensName = entryEns(entryId)
+  const entryEnsName = `${ensName}.mnemosyne.eth`
+  const entryEnsUrl = `https://sepolia.app.ens.domains/${entryEnsName}`
   const submitterEnsUrl = submitterEns ? `https://sepolia.app.ens.domains/${submitterEns}` : null
+  const submitterAddressUrl = entry?.submitter ? `https://chainscan-galileo.0g.ai/address/${entry.submitter}` : null
+  const submitTxHash = dbData?.submitTxHash ?? null
+  const submitTxUrl = submitTxHash ? `https://chainscan-galileo.0g.ai/tx/${submitTxHash}` : null
+  const challengeTxUrl = challengeTxHash ? `https://chainscan-galileo.0g.ai/tx/${challengeTxHash}` : null
 
   // Prefer on-chain data; fall back to DB data when chain entry is missing
   const displayStatus  = entry?.status ?? 0
@@ -210,11 +248,20 @@ export default function EntryPage() {
   const hasChainData   = !!entry
 
   const infoRows: [string, React.ReactNode][] = [
-    ['Name', <span key="ens" style={{ color: T.accent, fontWeight: 700 }}>{ensName}</span>],
+    ['Name',
+      <a key="ens" href={entryEnsUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, fontWeight: 700, textDecoration: 'none' }}>
+        {entryEnsName} ↗
+      </a>,
+    ],
     ['Submitted', submitterEnsUrl
       ? <a key="sub" href={submitterEnsUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>{submitterDisplay} ↗</a>
       : submitterDisplay],
-    ...(submitterRaw ? [['Address', truncateAddress(submitterRaw)] as [string, React.ReactNode]] : []),
+    ...(submitterRaw ? [[
+      'Address',
+      <a key="addr" href={submitterAddressUrl ?? '#'} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>
+        {truncateAddress(submitterRaw)} ↗
+      </a>,
+    ] as [string, React.ReactNode]] : []),
     ...(hasChainData ? [
       ['Stake', `${stakeFormatted} A0GI`] as [string, React.ReactNode],
     ] : []),
@@ -229,6 +276,18 @@ export default function EntryPage() {
       ['Token ID', `#${entry.inftTokenId.toString()}`] as [string, React.ReactNode],
       ['Owner', ownerDisplay] as [string, React.ReactNode],
     ] : []),
+    ...(submitTxUrl ? [[
+      'Submission Tx',
+      <a key="subtx" href={submitTxUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>
+        {submitTxHash?.slice(0, 12)}... ↗
+      </a>,
+    ] as [string, React.ReactNode]] : []),
+    ...(challengeTxUrl ? [[
+      'Last Challenge Tx',
+      <a key="chtx" href={challengeTxUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>
+        {challengeTxHash?.slice(0, 12)}... ↗
+      </a>,
+    ] as [string, React.ReactNode]] : []),
   ]
 
   const footer = countdown
@@ -345,7 +404,7 @@ export default function EntryPage() {
                 ...(entry && entry.inftTokenId > 0n ? [
                   { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => router.push('/marketplace') },
                 ] : []),
-                { label: 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(`https://chainscan-galileo.0g.ai/address/${REGISTRY_ADDRESS}`, '_blank') },
+                { label: submitTxUrl ? 'VIEW SUBMISSION TX ↗' : 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(submitTxUrl ?? `https://chainscan-galileo.0g.ai/address/${REGISTRY_ADDRESS}`, '_blank') },
               ].map(btn => (
                 <button key={btn.label} onClick={btn.action} style={{
                   display: 'block', width: '100%', textAlign: 'left', padding: '10px 14px',
@@ -389,6 +448,8 @@ export default function EntryPage() {
             ['Challenge window', footer],
             ['Queries', entry?.queryCount.toLocaleString() ?? '—'],
             ['Royalties earned', `${royaltiesFormatted} A0GI`],
+            ...(submitTxHash ? [['Submission tx', submitTxHash]] : []),
+            ...(challengeTxHash ? [['Last challenge tx', challengeTxHash]] : []),
             ...(entry && entry.inftTokenId > 0n ? [['iNFT Token ID', `#${entry.inftTokenId}`]] : []),
           ].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', gap: 24, padding: '10px 0', borderBottom: `1px solid ${T.borderLight}` }}>
@@ -425,7 +486,7 @@ export default function EntryPage() {
                 <div key={d.id} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 16 }}>
                   <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', marginBottom: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: T.accent }}>{d.author}</span>
-                    <span style={{ fontSize: 9, color: T.muted }}>{new Date(d.created_at).toLocaleString()}</span>
+                    <span style={{ fontSize: 9, color: T.muted }}>{new Date(d.createdAt ?? d.created_at ?? Date.now()).toLocaleString()}</span>
                   </div>
                   <p style={{ fontSize: 12, color: T.text, margin: 0, lineHeight: 1.6 }}>{d.content}</p>
                 </div>
@@ -484,10 +545,13 @@ export default function EntryPage() {
               If your challenge is upheld: entry is burned, you keep the stake.<br />
               If overturned: your stake goes to the submitter.
             </div>
+            {challengeError && (
+              <div style={{ fontSize: 11, color: T.danger }}>{challengeError}</div>
+            )}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <BtnGhost onClick={() => setShowChallenge(false)}>CANCEL</BtnGhost>
-              <BtnPrimary disabled={!address || !challengeReason}>
-                {address ? 'OPEN CHALLENGE →' : 'CONNECT WALLET FIRST'}
+              <BtnPrimary onClick={handleOpenChallenge} disabled={!address || !challengeReason || openingChallenge}>
+                {!address ? 'CONNECT WALLET FIRST' : openingChallenge ? 'OPENING...' : 'OPEN CHALLENGE →'}
               </BtnPrimary>
             </div>
           </div>

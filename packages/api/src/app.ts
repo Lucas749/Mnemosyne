@@ -30,6 +30,7 @@ interface CachedEntry {
   submittedBy?: string
   submitterAddress?: `0x${string}`
   onchainEntryId?: `0x${string}`
+  submitTxHash?: `0x${string}`
   challengeWindowEnd?: number
   inftTokenId?: bigint
   // Graph edges: entryId → similarity score for pairs above threshold
@@ -156,10 +157,11 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         }
       }
 
-      const onchainEntryId = await submitOnChain(storageRef, embeddingRef, tags, domain).catch((err) => {
+      const onchainSubmission = await submitOnChain(storageRef, embeddingRef, tags, domain).catch((err) => {
         console.error('[store] submitOnChain failed:', (err as Error).message ?? err)
-        return null
+        return { entryId: null, txHash: null }
       })
+      const onchainEntryId = onchainSubmission.entryId
       const CHALLENGE_WINDOW_MS = 5 * 60 * 1000 // matches contract (5 min testnet)
       const challengeWindowEnd = onchainEntryId
         ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
@@ -189,6 +191,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         domain,
         submittedBy,
         onchainEntryId: onchainEntryId ?? undefined,
+        submitTxHash: onchainSubmission.txHash ?? undefined,
         challengeWindowEnd,
         edges,
         queriedByAgents: [],
@@ -205,6 +208,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       upsertEntry(dbEntryId, {
         storageRef, tags, domain, submitter: submittedBy,
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
+        submitTxHash: onchainSubmission.txHash ?? null,
       })
       console.log(`[store] saved entryId=${dbEntryId} onchain=${!!onchainEntryId}`)
 
@@ -221,13 +225,22 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
           status: 'active',
           addedAt: Math.floor(Date.now() / 1000),
         }
-        manifestRef = await addEntryToManifest(storage, currentRef, submittedBy, entry)
-        setMemoryIndex(ensKey, submittedBy, manifestRef).catch((err) =>
-          console.error('[ens] setMemoryIndex failed:', err?.message ?? err)
-        )
+        const nextManifestRef = await addEntryToManifest(storage, currentRef, submittedBy, entry)
+        try {
+          await setMemoryIndex(ensKey, submittedBy, nextManifestRef)
+          manifestRef = nextManifestRef
+        } catch (err) {
+          console.error('[ens] setMemoryIndex failed:', (err as Error)?.message ?? err)
+        }
       }
 
-      const result: StoreResponse = { entryId: dbEntryId, storageRef, embeddingRef, manifestRef }
+      const result: StoreResponse = {
+        entryId: dbEntryId,
+        storageRef,
+        embeddingRef,
+        manifestRef,
+        submitTxHash: onchainSubmission.txHash ?? undefined,
+      }
       jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
     })().catch((err) => {
       console.error('[store] job failed:', err?.message ?? err)
@@ -434,14 +447,28 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     // 1. In-memory cache
     const cached = cache.get(entryId)
     if (cached) {
-      res.json({ entryId, content: cached.content, tags: cached.tags, domain: cached.domain, submittedBy: cached.submittedBy })
+      res.json({
+        entryId,
+        content: cached.content,
+        tags: cached.tags,
+        domain: cached.domain,
+        submittedBy: cached.submittedBy,
+        submitTxHash: cached.submitTxHash,
+      })
       return
     }
 
     // 2. SQLite DB
     const dbEntry = getDbEntry(entryId)
     if (dbEntry?.content) {
-      res.json({ entryId, content: dbEntry.content, tags: dbEntry.tags, domain: dbEntry.domain, submittedBy: dbEntry.submitter })
+      res.json({
+        entryId,
+        content: dbEntry.content,
+        tags: dbEntry.tags,
+        domain: dbEntry.domain,
+        submittedBy: dbEntry.submitter,
+        submitTxHash: dbEntry.submitTxHash,
+      })
       return
     }
 
@@ -477,7 +504,14 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         status: onChainEntry.status,
         inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId.toString() : '0',
       })
-      res.json({ entryId, content: blob.content, tags: blob.tags, domain: blob.domain, submittedBy: blob.submittedBy })
+      res.json({
+        entryId,
+        content: blob.content,
+        tags: blob.tags,
+        domain: blob.domain,
+        submittedBy: blob.submittedBy,
+        submitTxHash: null,
+      })
     } catch (err) {
       res.status(502).json({ error: '0G Storage fetch failed', detail: (err as Error).message })
     }

@@ -27,3 +27,8 @@ packages/contracts/broadcast/
 .local/
 ideation/
 *.log
+
+
+packages/api/mnemosyne.db
+packages/api/mnemosyne.db-shm
+packages/api/mnemosyne.db-wal

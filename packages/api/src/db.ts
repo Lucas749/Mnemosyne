@@ -14,7 +14,8 @@ db.exec(`
     status        INTEGER DEFAULT 0,
     content       TEXT,
     submitted_at  INTEGER,
-    inft_token_id TEXT DEFAULT '0'
+    inft_token_id TEXT DEFAULT '0',
+    submit_tx_hash TEXT
   );
 
   CREATE TABLE IF NOT EXISTS discussions (
@@ -35,6 +36,9 @@ try {
 try {
   db.exec(`UPDATE entries SET content = content_preview WHERE content IS NULL AND content_preview IS NOT NULL`)
 } catch { /* column may not exist */ }
+try {
+  db.exec(`ALTER TABLE entries ADD COLUMN submit_tx_hash TEXT`)
+} catch { /* column already exists */ }
 
 
 interface EntryRow {
@@ -47,6 +51,7 @@ interface EntryRow {
   content: string | null
   submitted_at: number | null
   inft_token_id: string
+  submit_tx_hash: string | null
 }
 
 interface DiscussionRow {
@@ -69,12 +74,13 @@ function parseEntry(row: EntryRow) {
     contentPreview: row.content ? row.content.slice(0, 500) : null,
     submittedAt:    row.submitted_at,
     inftTokenId:    row.inft_token_id,
+    submitTxHash:   row.submit_tx_hash,
   }
 }
 
 const stmtUpsert = db.prepare(`
-  INSERT INTO entries (entry_id, storage_ref, tags, domain, submitter, status, content, submitted_at, inft_token_id)
-  VALUES (@entry_id, @storage_ref, @tags, @domain, @submitter, @status, @content, @submitted_at, @inft_token_id)
+  INSERT INTO entries (entry_id, storage_ref, tags, domain, submitter, status, content, submitted_at, inft_token_id, submit_tx_hash)
+  VALUES (@entry_id, @storage_ref, @tags, @domain, @submitter, @status, @content, @submitted_at, @inft_token_id, @submit_tx_hash)
   ON CONFLICT(entry_id) DO UPDATE SET
     storage_ref   = COALESCE(excluded.storage_ref,  storage_ref),
     tags          = COALESCE(excluded.tags,          tags),
@@ -83,7 +89,8 @@ const stmtUpsert = db.prepare(`
     status        = COALESCE(excluded.status,        status),
     content       = COALESCE(excluded.content,       content),
     submitted_at  = COALESCE(excluded.submitted_at,  submitted_at),
-    inft_token_id = COALESCE(excluded.inft_token_id, inft_token_id)
+    inft_token_id = COALESCE(excluded.inft_token_id, inft_token_id),
+    submit_tx_hash = COALESCE(excluded.submit_tx_hash, submit_tx_hash)
 `)
 
 export function upsertEntry(entryId: string, data: {
@@ -95,6 +102,7 @@ export function upsertEntry(entryId: string, data: {
   content?:     string | null
   submittedAt?: number | null
   inftTokenId?: string | null
+  submitTxHash?: string | null
 }) {
   stmtUpsert.run({
     entry_id:     entryId,
@@ -106,6 +114,7 @@ export function upsertEntry(entryId: string, data: {
     content:      data.content     ?? null,
     submitted_at: data.submittedAt ?? null,
     inft_token_id: data.inftTokenId ?? null,
+    submit_tx_hash: data.submitTxHash ?? null,
   })
 }
 

@@ -12,6 +12,7 @@ export interface StoreResponse {
   storageRef: string
   embeddingRef: string
   manifestRef?: string
+  submitTxHash?: string
 }
 
 export interface QueryRequest {

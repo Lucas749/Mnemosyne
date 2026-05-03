@@ -1,20 +1,21 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
-import { useReadContract, useReadContracts, useWriteContract, useAccount } from 'wagmi'
+import { useReadContracts, useAccount } from 'wagmi'
 import { parseEther, formatEther } from 'viem'
 import { Tag, Modal, BtnPrimary, BtnGhost } from '@/components/design-system'
 import { T } from '@/components/design-system'
-import { MARKET_ADDRESS, MARKET_ABI, REGISTRY_ADDRESS, REGISTRY_ABI, STATUS_LABELS } from '@/lib/contracts'
+import { REGISTRY_ADDRESS, REGISTRY_ABI, STATUS_LABELS } from '@/lib/contracts'
 import { zgTestnet } from '@/lib/chains'
 import { entryEns } from '@/lib/entry-name'
 import { formatA0GI } from '@/lib/ens'
+import { fetchMarketListings, buyListing, listForSale, cancelListing } from '@/lib/api'
 
 type Listing = {
-  tokenId: bigint
-  seller: `0x${string}`
-  price: bigint
+  tokenId: string
+  seller: string
+  price: string
 }
 
 type EntryData = {
@@ -36,13 +37,10 @@ export default function MarketplacePage() {
   const [txHash, setTxHash] = useState<string | null>(null)
   const [txError, setTxError] = useState<string | null>(null)
   const [activating, setActivating] = useState<string | null>(null)
-
-  const { data: rawListings, isLoading, refetch, isError } = useReadContract({
-    address: MARKET_ADDRESS,
-    abi: MARKET_ABI,
-    functionName: 'getActiveListings',
-    chainId: zgTestnet.id,
-  })
+  const [listings, setListings] = useState<Listing[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [isError, setIsError] = useState(false)
+  const [actionPending, setActionPending] = useState(false)
 
   // Fetch wallet's submitted entries to show as owned knowledge NFTs
   const { data: walletEntryIds } = useReadContracts({
@@ -62,22 +60,26 @@ export default function MarketplacePage() {
     .map(d => d.result as unknown as EntryData)
     .filter(Boolean)
 
-  const { writeContract, isPending } = useWriteContract()
+  const loadListings = async () => {
+    setIsLoading(true)
+    setIsError(false)
+    try {
+      const data = await fetchMarketListings()
+      setListings(data.listings)
+    } catch {
+      setIsError(true)
+    } finally {
+      setIsLoading(false)
+    }
+  }
 
-  const listings: Listing[] = (() => {
-    if (!rawListings) return []
-    const [tokenIds, lst] = rawListings as unknown as [
-      bigint[],
-      { seller: `0x${string}`; price: bigint; active: boolean }[]
-    ]
-    return tokenIds
-      .map((tokenId, i) => ({ tokenId, seller: lst[i].seller, price: lst[i].price }))
-      .filter((_, i) => lst[i].active)
-  })()
+  useEffect(() => {
+    loadListings()
+  }, [])
 
   const sorted = [...listings].sort((a, b) => {
-    if (sort === 'price') return a.price < b.price ? -1 : 1
-    return a.tokenId < b.tokenId ? 1 : -1
+    if (sort === 'price') return BigInt(a.price) < BigInt(b.price) ? -1 : 1
+    return BigInt(a.tokenId) < BigInt(b.tokenId) ? 1 : -1
   })
 
   async function handleActivate(entryId: string) {
@@ -97,29 +99,52 @@ export default function MarketplacePage() {
     }
   }
 
-  function handleBuy(listing: Listing) {
+  async function handleBuy(listing: Listing) {
+    if (!address) return
     setTxError(null)
-    writeContract(
-      { address: MARKET_ADDRESS, abi: MARKET_ABI, functionName: 'buyItem', args: [listing.tokenId], value: listing.price, chainId: zgTestnet.id },
-      { onSuccess(hash) { setTxHash(hash); setBuyModal(null); refetch() }, onError(err) { setTxError(err.message) } }
-    )
+    setActionPending(true)
+    try {
+      const result = await buyListing(listing.tokenId, address, listing.price)
+      setTxHash(result.txHash)
+      setBuyModal(null)
+      await loadListings()
+    } catch (err) {
+      setTxError((err as Error).message)
+    } finally {
+      setActionPending(false)
+    }
   }
 
-  function handleList() {
-    if (!listTokenId || !listPrice) return
+  async function handleList() {
+    if (!address || !listTokenId || !listPrice) return
     setTxError(null)
-    writeContract(
-      { address: MARKET_ADDRESS, abi: MARKET_ABI, functionName: 'listItem', args: [BigInt(listTokenId), parseEther(listPrice)], chainId: zgTestnet.id },
-      { onSuccess(hash) { setTxHash(hash); setListModal(false); setListPrice(''); setListTokenId(''); refetch() }, onError(err) { setTxError(err.message) } }
-    )
+    setActionPending(true)
+    try {
+      const result = await listForSale(listTokenId, address, parseEther(listPrice).toString())
+      setTxHash(result.txHash)
+      setListModal(false)
+      setListPrice('')
+      setListTokenId('')
+      await loadListings()
+    } catch (err) {
+      setTxError((err as Error).message)
+    } finally {
+      setActionPending(false)
+    }
   }
 
-  function handleCancel(tokenId: bigint) {
+  async function handleCancel(tokenId: string) {
     setTxError(null)
-    writeContract(
-      { address: MARKET_ADDRESS, abi: MARKET_ABI, functionName: 'cancelListing', args: [tokenId], chainId: zgTestnet.id },
-      { onSuccess(hash) { setTxHash(hash); refetch() }, onError(err) { setTxError(err.message) } }
-    )
+    setActionPending(true)
+    try {
+      const result = await cancelListing(tokenId)
+      setTxHash(result.txHash)
+      await loadListings()
+    } catch (err) {
+      setTxError((err as Error).message)
+    } finally {
+      setActionPending(false)
+    }
   }
 
   return (
@@ -163,7 +188,7 @@ export default function MarketplacePage() {
               {myEntries.map(e => {
                 const name = entryEns(e.id)
                 const knowledgeTags = e.tags.filter(t => !['factual','labeled_example','structured_data','observation','correction'].includes(t.toLowerCase()))
-                const isListed = listings.some(l => l.tokenId === e.inftTokenId && e.inftTokenId > 0n)
+                const isListed = listings.some(l => BigInt(l.tokenId) === e.inftTokenId && e.inftTokenId > 0n)
                 return (
                   <div key={e.id} style={{ borderRight: `1px solid ${T.borderLight}`, borderBottom: `1px solid ${T.borderLight}`, padding: '14px 16px' }}>
                     <div style={{ fontSize: 12, fontWeight: 700, color: T.accent, marginBottom: 4 }}>
@@ -241,10 +266,10 @@ export default function MarketplacePage() {
           {sorted.map(l => {
             const isOwn = l.seller.toLowerCase() === address?.toLowerCase()
             // Try to find the entry for this token ID
-            const matchedEntry = myEntries.find(e => e.inftTokenId === l.tokenId)
+            const matchedEntry = myEntries.find(e => e.inftTokenId === BigInt(l.tokenId))
             const displayName = matchedEntry ? entryEns(matchedEntry.id) : `iNFT #${l.tokenId}`
             return (
-              <div key={l.tokenId.toString()} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+              <div key={l.tokenId} style={{ background: T.card, border: `1px solid ${T.border}`, borderRadius: 4, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
                 <div style={{ background: T.faint, padding: '10px 16px', borderBottom: `1px solid ${T.borderLight}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                   <span style={{ fontSize: 12, fontWeight: 700, color: T.accent }}>{displayName}</span>
                   {isOwn && <Tag variant="warning">YOURS</Tag>}
@@ -258,11 +283,11 @@ export default function MarketplacePage() {
                 )}
                 <div style={{ padding: '12px 16px', flex: 1 }}>
                   <div style={{ fontSize: 10, color: T.muted, marginBottom: 8 }}>Seller: {l.seller.slice(0, 14)}...</div>
-                  <div style={{ fontSize: 16, color: T.accent, fontWeight: 700 }}>{formatEther(l.price)} A0GI</div>
+                  <div style={{ fontSize: 16, color: T.accent, fontWeight: 700 }}>{formatEther(BigInt(l.price))} A0GI</div>
                 </div>
                 <div style={{ padding: '10px 16px', borderTop: `1px solid ${T.borderLight}`, display: 'flex', gap: 8 }}>
                   {isOwn ? (
-                    <button onClick={() => handleCancel(l.tokenId)} disabled={isPending} style={{ flex: 1, background: 'none', border: `1px solid ${T.danger}`, borderRadius: 3, padding: '8px', fontFamily: T.codeFont, fontSize: 9, color: T.danger, cursor: isPending ? 'not-allowed' : 'pointer' }}>
+                    <button onClick={() => handleCancel(l.tokenId)} disabled={actionPending} style={{ flex: 1, background: 'none', border: `1px solid ${T.danger}`, borderRadius: 3, padding: '8px', fontFamily: T.codeFont, fontSize: 9, color: T.danger, cursor: actionPending ? 'not-allowed' : 'pointer' }}>
                       CANCEL LISTING
                     </button>
                   ) : (
@@ -281,11 +306,11 @@ export default function MarketplacePage() {
         <Modal title="BUY iNFT" onClose={() => setBuyModal(null)}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 18, fontFamily: T.codeFont }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: T.accent }}>
-              {myEntries.find(e => e.inftTokenId === buyModal.tokenId) ? entryEns(myEntries.find(e => e.inftTokenId === buyModal.tokenId)!.id) : `iNFT #${buyModal.tokenId}`}
+              {myEntries.find(e => e.inftTokenId === BigInt(buyModal.tokenId)) ? entryEns(myEntries.find(e => e.inftTokenId === BigInt(buyModal.tokenId))!.id) : `iNFT #${buyModal.tokenId}`}
             </div>
             {[
               ['Seller', buyModal.seller.slice(0, 18) + '...'],
-              ['Price', `${formatEther(buyModal.price)} A0GI`],
+              ['Price', `${formatEther(BigInt(buyModal.price))} A0GI`],
             ].map(([k, v]) => (
               <div key={k} style={{ display: 'flex', justifyContent: 'space-between', borderBottom: `1px solid ${T.borderLight}`, paddingBottom: 8 }}>
                 <span style={{ fontSize: 10, color: T.muted }}>{k}</span>
@@ -302,8 +327,8 @@ export default function MarketplacePage() {
             {!address && <div style={{ fontSize: 11, color: T.danger }}>Connect your wallet to buy.</div>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <BtnGhost onClick={() => setBuyModal(null)}>CANCEL</BtnGhost>
-              <BtnPrimary onClick={() => handleBuy(buyModal)} disabled={!address || isPending}>
-                {isPending ? 'CONFIRM IN WALLET...' : `BUY FOR ${formatEther(buyModal.price)} A0GI →`}
+              <BtnPrimary onClick={() => handleBuy(buyModal)} disabled={!address || actionPending}>
+                {actionPending ? 'PROCESSING...' : `BUY FOR ${formatEther(BigInt(buyModal.price))} A0GI →`}
               </BtnPrimary>
             </div>
           </div>
@@ -359,8 +384,8 @@ export default function MarketplacePage() {
             {txError && <div style={{ fontSize: 11, color: T.danger }}>{txError}</div>}
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
               <BtnGhost onClick={() => setListModal(false)}>CANCEL</BtnGhost>
-              <BtnPrimary onClick={handleList} disabled={!address || !listTokenId || !listPrice || isPending}>
-                {isPending ? 'CONFIRM IN WALLET...' : 'LIST FOR SALE →'}
+              <BtnPrimary onClick={handleList} disabled={!address || !listTokenId || !listPrice || actionPending}>
+                {actionPending ? 'PROCESSING...' : 'LIST FOR SALE →'}
               </BtnPrimary>
             </div>
           </div>

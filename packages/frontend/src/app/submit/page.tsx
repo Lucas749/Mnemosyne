@@ -8,7 +8,7 @@ import { useAccount } from 'wagmi'
 import { Tag, BtnPrimary, BtnGhost } from '@/components/design-system'
 import { T } from '@/components/design-system'
 import { submitEntry, pollJob } from '@/lib/api'
-import { truncateAddress } from '@/lib/ens'
+import { resolveAddressToEns, truncateAddress } from '@/lib/ens'
 
 const PROGRESS_STEPS = [
   { key: 'uploading', label: 'uploading to 0G storage...' },
@@ -38,7 +38,9 @@ export default function SubmitPage() {
     setError(null)
     setProgress('uploading')
     try {
-      const submittedBy = address ? truncateAddress(address) : 'anonymous'
+      const submittedBy = address
+        ? (await resolveAddressToEns(address)) ?? address
+        : 'anonymous'
       const jid = await submitEntry({
         content: fullContent,
         domain,

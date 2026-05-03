@@ -207,9 +207,9 @@ export async function submitOnChain(
   embeddingRef: string,
   tags: string[],
   domain: string,
-): Promise<`0x${string}` | null> {
+): Promise<{ entryId: `0x${string}` | null; txHash: `0x${string}` | null }> {
   const c = clients()
-  if (!c) return null
+  if (!c) return { entryId: null, txHash: null }
   const registry = ADDR.registry
   const args = [storageRef, embeddingRef, tags, DOMAIN_INDEX[domain] ?? 0] as const
 
@@ -239,7 +239,7 @@ export async function submitOnChain(
   })
   await c.pub.waitForTransactionReceipt({ hash })
   console.log(`[submitOnChain] tx=${hash} entryId=${simulatedId}`)
-  return simulatedId
+  return { entryId: simulatedId, txHash: hash }
 }
 
 /**
