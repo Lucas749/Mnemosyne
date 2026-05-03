@@ -6,16 +6,18 @@ db.pragma('journal_mode = WAL')
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS entries (
-    entry_id      TEXT PRIMARY KEY,
-    storage_ref   TEXT,
-    tags          TEXT,
-    domain        TEXT,
-    submitter     TEXT,
-    status        INTEGER DEFAULT 0,
-    content       TEXT,
-    submitted_at  INTEGER,
-    inft_token_id TEXT DEFAULT '0',
-    submit_tx_hash TEXT
+    entry_id         TEXT PRIMARY KEY,
+    storage_ref      TEXT,
+    tags             TEXT,
+    domain           TEXT,
+    submitter        TEXT,
+    status           INTEGER DEFAULT 0,
+    content          TEXT,
+    submitted_at     INTEGER,
+    inft_token_id    TEXT DEFAULT '0',
+    submit_tx_hash   TEXT,
+    embedding_ref    TEXT,
+    embedding_vector TEXT
   );
 
   CREATE TABLE IF NOT EXISTS discussions (
@@ -47,7 +49,12 @@ try {
 try {
   db.exec(`ALTER TABLE entries ADD COLUMN submitter_wallet TEXT`)
 } catch { /* column exists */ }
-
+try {
+  db.exec(`ALTER TABLE entries ADD COLUMN embedding_ref TEXT`)
+} catch { /* column exists */ }
+try {
+  db.exec(`ALTER TABLE entries ADD COLUMN embedding_vector TEXT`)
+} catch { /* column exists */ }
 
 interface EntryRow {
   entry_id: string
@@ -62,6 +69,8 @@ interface EntryRow {
   inft_token_id: string
   submit_tx_hash: string | null
   encryption_entry_id: string | null
+  embedding_ref: string | null
+  embedding_vector: string | null
 }
 
 interface DiscussionRow {
@@ -74,19 +83,21 @@ interface DiscussionRow {
 
 function parseEntry(row: EntryRow) {
   return {
-    entryId:        row.entry_id,
-    storageRef:     row.storage_ref,
-    tags:           row.tags ? (JSON.parse(row.tags) as string[]) : [],
-    domain:         row.domain,
-    submitter:      row.submitter,
-    status:         row.status,
-    content:        row.content,
-    contentPreview: row.content ? row.content.slice(0, 500) : null,
-    submittedAt:    row.submitted_at,
-    inftTokenId:    row.inft_token_id,
-    submitTxHash:   row.submit_tx_hash,
-    submitterWallet: row.submitter_wallet,
+    entryId:          row.entry_id,
+    storageRef:       row.storage_ref,
+    tags:             row.tags ? (JSON.parse(row.tags) as string[]) : [],
+    domain:           row.domain,
+    submitter:        row.submitter,
+    status:           row.status,
+    content:          row.content,
+    contentPreview:   row.content ? row.content.slice(0, 500) : null,
+    submittedAt:      row.submitted_at,
+    inftTokenId:      row.inft_token_id,
+    submitTxHash:     row.submit_tx_hash,
+    submitterWallet:  row.submitter_wallet,
     encryptionEntryId: row.encryption_entry_id ?? row.entry_id,
+    embeddingRef:     row.embedding_ref,
+    embeddingVector:  row.embedding_vector ? (JSON.parse(row.embedding_vector) as number[]) : [],
   }
 }
 
@@ -111,48 +122,54 @@ export function getDbEntry(entryIdOrDecryptKey: string) {
 }
 
 const stmtUpsert = db.prepare(`
-  INSERT INTO entries (entry_id, storage_ref, tags, domain, submitter, submitter_wallet, status, content, submitted_at, inft_token_id, submit_tx_hash, encryption_entry_id)
-  VALUES (@entry_id, @storage_ref, @tags, @domain, @submitter, @submitter_wallet, @status, @content, @submitted_at, @inft_token_id, @submit_tx_hash, @encryption_entry_id)
+  INSERT INTO entries (entry_id, storage_ref, tags, domain, submitter, submitter_wallet, status, content, submitted_at, inft_token_id, submit_tx_hash, encryption_entry_id, embedding_ref, embedding_vector)
+  VALUES (@entry_id, @storage_ref, @tags, @domain, @submitter, @submitter_wallet, @status, @content, @submitted_at, @inft_token_id, @submit_tx_hash, @encryption_entry_id, @embedding_ref, @embedding_vector)
   ON CONFLICT(entry_id) DO UPDATE SET
-    storage_ref   = COALESCE(excluded.storage_ref,  storage_ref),
-    tags          = COALESCE(excluded.tags,          tags),
-    domain        = COALESCE(excluded.domain,        domain),
-    submitter     = COALESCE(excluded.submitter,     submitter),
+    storage_ref      = COALESCE(excluded.storage_ref,      storage_ref),
+    tags             = COALESCE(excluded.tags,             tags),
+    domain           = COALESCE(excluded.domain,           domain),
+    submitter        = COALESCE(excluded.submitter,        submitter),
     submitter_wallet = COALESCE(excluded.submitter_wallet, submitter_wallet),
-    status        = COALESCE(excluded.status,        status),
-    content       = COALESCE(excluded.content,       content),
-    submitted_at  = COALESCE(excluded.submitted_at,  submitted_at),
-    inft_token_id = COALESCE(excluded.inft_token_id, inft_token_id),
-    submit_tx_hash = COALESCE(excluded.submit_tx_hash, submit_tx_hash),
-    encryption_entry_id = COALESCE(excluded.encryption_entry_id, encryption_entry_id)
+    status           = COALESCE(excluded.status,           status),
+    content          = COALESCE(excluded.content,          content),
+    submitted_at     = COALESCE(excluded.submitted_at,     submitted_at),
+    inft_token_id    = COALESCE(excluded.inft_token_id,    inft_token_id),
+    submit_tx_hash   = COALESCE(excluded.submit_tx_hash,   submit_tx_hash),
+    encryption_entry_id = COALESCE(excluded.encryption_entry_id, encryption_entry_id),
+    embedding_ref    = COALESCE(excluded.embedding_ref,    embedding_ref),
+    embedding_vector = COALESCE(excluded.embedding_vector, embedding_vector)
 `)
 
 export function upsertEntry(entryId: string, data: {
-  storageRef?:  string | null
-  tags?:        string[]
-  domain?:      string | null
-  submitter?:   string | null
-  submitterWallet?: string | null
-  status?:      number | null
-  content?:     string | null
-  submittedAt?: number | null
-  inftTokenId?: string | null
-  submitTxHash?: string | null
+  storageRef?:       string | null
+  tags?:             string[]
+  domain?:           string | null
+  submitter?:        string | null
+  submitterWallet?:  string | null
+  status?:           number | null
+  content?:          string | null
+  submittedAt?:      number | null
+  inftTokenId?:      string | null
+  submitTxHash?:     string | null
   encryptionEntryId?: string | null
+  embeddingRef?:     string | null
+  embeddingVector?:  number[] | null
 }) {
   stmtUpsert.run({
-    entry_id:     entryId,
-    storage_ref:  data.storageRef  ?? null,
-    tags:         data.tags != null ? JSON.stringify(data.tags) : null,
-    domain:       data.domain      ?? null,
-    submitter:    data.submitter   ?? null,
-    submitter_wallet: data.submitterWallet ?? null,
-    status:       data.status      ?? null,
-    content:      data.content     ?? null,
-    submitted_at: data.submittedAt ?? null,
-    inft_token_id: data.inftTokenId ?? null,
-    submit_tx_hash: data.submitTxHash ?? null,
+    entry_id:          entryId,
+    storage_ref:       data.storageRef       ?? null,
+    tags:              data.tags != null ? JSON.stringify(data.tags) : null,
+    domain:            data.domain           ?? null,
+    submitter:         data.submitter        ?? null,
+    submitter_wallet:  data.submitterWallet  ?? null,
+    status:            data.status           ?? null,
+    content:           data.content          ?? null,
+    submitted_at:      data.submittedAt      ?? null,
+    inft_token_id:     data.inftTokenId      ?? null,
+    submit_tx_hash:    data.submitTxHash     ?? null,
     encryption_entry_id: data.encryptionEntryId ?? null,
+    embedding_ref:     data.embeddingRef     ?? null,
+    embedding_vector:  data.embeddingVector != null ? JSON.stringify(data.embeddingVector) : null,
   })
 }
 

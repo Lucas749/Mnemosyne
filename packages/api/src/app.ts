@@ -108,6 +108,31 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   const cache = new Map<string, CachedEntry>()
   const jobs  = new Map<string, Job>()
 
+  // Hydrate in-memory cache from DB on startup so similarity search works after restart
+  ;(async () => {
+    const rows = getAllDbEntries()
+    let hydrated = 0
+    for (const row of rows) {
+      if (!row.content) continue
+      const vector = row.embeddingVector ?? []
+      cache.set(row.entryId, {
+        content: row.content,
+        vector,
+        storageRef: row.storageRef ?? '',
+        tags: row.tags,
+        domain: row.domain ?? undefined,
+        submittedBy: row.submitter ?? undefined,
+        encryptionEntryId: row.encryptionEntryId,
+        onchainEntryId: row.entryId as `0x${string}`,
+        submitTxHash: row.submitTxHash as `0x${string}` | undefined ?? undefined,
+        inftTokenId: row.inftTokenId && row.inftTokenId !== '0' ? BigInt(row.inftTokenId) : undefined,
+        edges: {}, queriedByAgents: [],
+      })
+      hydrated++
+    }
+    if (hydrated > 0) console.log(`[startup] cache hydrated from DB: ${hydrated} entries`)
+  })().catch(err => console.warn('[startup] cache hydration error:', err))
+
   // Purge jobs older than 10 minutes to avoid unbounded memory growth
   setInterval(() => {
     const cutoff = Date.now() - 10 * 60 * 1000
@@ -329,6 +354,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
         submitTxHash: onchainSubmission.txHash ?? null,
         encryptionEntryId: encryptionKeyId,
+        embeddingRef: embeddingRef || null,
+        embeddingVector: embVector.length > 0 ? embVector : null,
       })
       slog(`STEP 5 sqlite+cache upsert entryId=${dbPublicId}`)
 
@@ -569,6 +596,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       content, submittedAt: Math.floor(Date.now() / 1000),
       submitTxHash: txHash,
       encryptionEntryId: encryptionKeyId ?? dbPublicId,
+      embeddingRef: embeddingRef || null,
     })
 
     cache.set(dbPublicId, {
