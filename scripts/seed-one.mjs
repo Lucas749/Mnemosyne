@@ -102,6 +102,9 @@ async function main() {
   console.log(`\n\n\x1b[32m✓ entryId: ${result.entryId}\x1b[0m`)
   console.log(`  storageRef:   ${result.storageRef}`)
   console.log(`  embeddingRef: ${result.embeddingRef}`)
+  if (result.entryEnsName) {
+    console.log(`  entry ENS:    ${result.entryEnsName}`)
+  }
   if (result.manifestRef) {
     console.log(`\n\x1b[33m✓ ENS memory.index updated\x1b[0m`)
     console.log(`  manifestRef: ${result.manifestRef}`)

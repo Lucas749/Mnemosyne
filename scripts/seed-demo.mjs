@@ -7,7 +7,7 @@
  */
 
 const API = 'https://mnemosyne-api-production-7cd6.up.railway.app'
-const SUBMITTER = 'demo.mnemosyne.eth'
+const SUBMITTER = 'mnemosyne.eth'
 const POLL_INTERVAL_MS = 3000
 const JOB_TIMEOUT_MS = 300_000
 
@@ -461,6 +461,19 @@ async function pollJob(jobId, label) {
   throw new Error(`Timed out after ${JOB_TIMEOUT_MS / 1000}s`)
 }
 
+function isBytes32Hex(v) {
+  return typeof v === 'string' && /^0x[0-9a-fA-F]{64}$/.test(v)
+}
+
+async function verifyEnsBootstrap() {
+  const res = await fetch(`${API}/load-from-ens/${SUBMITTER}`)
+  const body = await res.json()
+  if (!res.ok || body?.error) {
+    throw new Error(`ENS bootstrap failed: ${body?.error ?? `HTTP ${res.status}`}`)
+  }
+  return body
+}
+
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -504,8 +517,36 @@ async function main() {
       const result = await pollJob(jobId, title)
       process.stdout.write('\n')
 
+      if (!isBytes32Hex(result.entryId)) {
+        throw new Error(`Non-bytes32 entryId returned (${result.entryId}) — on-chain submit likely failed`)
+      }
+      if (!result.submitTxHash) {
+        throw new Error('Missing submitTxHash — on-chain tx not confirmed')
+      }
+      if (!result.manifestRef) {
+        throw new Error('Missing manifestRef — ENS memory.index not updated')
+      }
+      const contentCheck = await fetch(`${API}/content/${result.entryId}`)
+      if (!contentCheck.ok) {
+        throw new Error(`GET /content failed: HTTP ${contentCheck.status}`)
+      }
+      const ensCheck = await verifyEnsBootstrap()
+
       log(GREEN, `  ✓ entryId: ${result.entryId}`)
-      results.push({ title, domain: entry.domain, tags: entry.tags, entryId: result.entryId, jobId })
+      log(DIM, `  tx: ${result.submitTxHash}`)
+      log(DIM, `  manifest: ${result.manifestRef}`)
+      if (result.entryEnsName) log(DIM, `  entry ENS: ${result.entryEnsName}`)
+      results.push({
+        title,
+        domain: entry.domain,
+        tags: entry.tags,
+        entryId: result.entryId,
+        jobId,
+        submitTxHash: result.submitTxHash,
+        manifestRef: result.manifestRef,
+        entryEnsName: result.entryEnsName ?? null,
+        ensLoaded: ensCheck.loaded,
+      })
 
     } catch (err) {
       process.stdout.write('\n')
@@ -540,7 +581,7 @@ async function main() {
   const fs = await import('fs')
   fs.writeFileSync(outputPath, JSON.stringify({ submittedAt: new Date().toISOString(), entries: results }, null, 2))
   log(DIM, `\nResults written to .local/seed-results.json`)
-  log(AMBER, `\nOpen http://localhost:3000 to see the entries in the graph.\n`)
+  log(AMBER, `\nOpen https://mnemosyne-production.up.railway.app to review seeded entries.\n`)
 }
 
 main().catch(err => {

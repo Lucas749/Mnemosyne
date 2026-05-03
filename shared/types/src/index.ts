@@ -123,6 +123,8 @@ export interface Query {
 
 export interface ManifestEntry {
   entryId: string
+  /** Matches EntryBlob.id passed to decrypt(); omit when identical to entryId */
+  storageDecryptId?: string
   storageRef: string              // 0G blob ref for full entry content
   embeddingRef: string            // 0G blob ref for embedding vector
   domain: EntryDomain

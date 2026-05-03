@@ -13,6 +13,7 @@ export interface StoreResponse {
   embeddingRef: string
   manifestRef?: string
   submitTxHash?: string
+  entryEnsName?: string
 }
 
 export interface QueryRequest {

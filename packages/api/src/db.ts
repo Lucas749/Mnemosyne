@@ -39,6 +39,9 @@ try {
 try {
   db.exec(`ALTER TABLE entries ADD COLUMN submit_tx_hash TEXT`)
 } catch { /* column already exists */ }
+try {
+  db.exec(`ALTER TABLE entries ADD COLUMN encryption_entry_id TEXT`)
+} catch { /* column already exists */ }
 
 
 interface EntryRow {
@@ -52,6 +55,7 @@ interface EntryRow {
   submitted_at: number | null
   inft_token_id: string
   submit_tx_hash: string | null
+  encryption_entry_id: string | null
 }
 
 interface DiscussionRow {
@@ -75,12 +79,13 @@ function parseEntry(row: EntryRow) {
     submittedAt:    row.submitted_at,
     inftTokenId:    row.inft_token_id,
     submitTxHash:   row.submit_tx_hash,
+    encryptionEntryId: row.encryption_entry_id ?? row.entry_id,
   }
 }
 
 const stmtUpsert = db.prepare(`
-  INSERT INTO entries (entry_id, storage_ref, tags, domain, submitter, status, content, submitted_at, inft_token_id, submit_tx_hash)
-  VALUES (@entry_id, @storage_ref, @tags, @domain, @submitter, @status, @content, @submitted_at, @inft_token_id, @submit_tx_hash)
+  INSERT INTO entries (entry_id, storage_ref, tags, domain, submitter, status, content, submitted_at, inft_token_id, submit_tx_hash, encryption_entry_id)
+  VALUES (@entry_id, @storage_ref, @tags, @domain, @submitter, @status, @content, @submitted_at, @inft_token_id, @submit_tx_hash, @encryption_entry_id)
   ON CONFLICT(entry_id) DO UPDATE SET
     storage_ref   = COALESCE(excluded.storage_ref,  storage_ref),
     tags          = COALESCE(excluded.tags,          tags),
@@ -90,7 +95,8 @@ const stmtUpsert = db.prepare(`
     content       = COALESCE(excluded.content,       content),
     submitted_at  = COALESCE(excluded.submitted_at,  submitted_at),
     inft_token_id = COALESCE(excluded.inft_token_id, inft_token_id),
-    submit_tx_hash = COALESCE(excluded.submit_tx_hash, submit_tx_hash)
+    submit_tx_hash = COALESCE(excluded.submit_tx_hash, submit_tx_hash),
+    encryption_entry_id = COALESCE(excluded.encryption_entry_id, encryption_entry_id)
 `)
 
 export function upsertEntry(entryId: string, data: {
@@ -103,6 +109,7 @@ export function upsertEntry(entryId: string, data: {
   submittedAt?: number | null
   inftTokenId?: string | null
   submitTxHash?: string | null
+  encryptionEntryId?: string | null
 }) {
   stmtUpsert.run({
     entry_id:     entryId,
@@ -115,17 +122,52 @@ export function upsertEntry(entryId: string, data: {
     submitted_at: data.submittedAt ?? null,
     inft_token_id: data.inftTokenId ?? null,
     submit_tx_hash: data.submitTxHash ?? null,
+    encryption_entry_id: data.encryptionEntryId ?? null,
   })
 }
 
-export function getDbEntry(entryId: string) {
-  const row = db.prepare('SELECT * FROM entries WHERE entry_id = ?').get(entryId) as EntryRow | undefined
+export function getDbEntry(entryIdOrDecryptKey: string) {
+  const row = db.prepare(
+    `SELECT * FROM entries WHERE entry_id = ? OR encryption_entry_id = ?`,
+  ).get(entryIdOrDecryptKey, entryIdOrDecryptKey) as EntryRow | undefined
   return row ? parseEntry(row) : null
 }
 
 export function getAllDbEntries() {
   const rows = db.prepare('SELECT * FROM entries ORDER BY submitted_at DESC').all() as EntryRow[]
   return rows.map(parseEntry)
+}
+
+/** Move SQLite PK from upload-time id → on-chain bytes32; keeps discussions FK aligned. */
+export function migrateEntryPrimaryKey(
+  fromId: string,
+  toId: string,
+  submitTxHash: string,
+): { ok: true } | { ok: false; reason: string } {
+  if (fromId === toId) {
+    if (submitTxHash) {
+      db.prepare('UPDATE entries SET submit_tx_hash = ? WHERE entry_id = ?').run(submitTxHash, toId)
+    }
+    return { ok: true }
+  }
+  const rowFrom = db.prepare('SELECT entry_id FROM entries WHERE entry_id = ?').get(fromId) as { entry_id: string } | undefined
+  if (!rowFrom) return { ok: false, reason: `no row entry_id=${fromId}` }
+
+  const rowTo = db.prepare('SELECT entry_id FROM entries WHERE entry_id = ?').get(toId) as { entry_id: string } | undefined
+  if (rowTo) return { ok: false, reason: `collision entry_id=${toId} exists` }
+
+  try {
+    const txn = db.transaction(() => {
+      db.prepare(`UPDATE discussions SET entry_id = @toId WHERE entry_id = @fromId`).run({ toId, fromId })
+      db.prepare(
+        `UPDATE entries SET entry_id = @toId, submit_tx_hash = @submitTxHash WHERE entry_id = @fromId`,
+      ).run({ toId, fromId, submitTxHash })
+    })
+    txn()
+  } catch (e) {
+    return { ok: false, reason: (e as Error).message }
+  }
+  return { ok: true }
 }
 
 export function deleteEntry(entryId: string) {

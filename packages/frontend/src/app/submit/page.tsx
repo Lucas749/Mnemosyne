@@ -168,7 +168,8 @@ export default function SubmitPage() {
         ) : (
           <>
             <span style={{ fontSize: 11, color: T.muted, flex: 1 }}>
-              Stake: 0.005 A0GI (relayer pays) · {address ? `From: ${truncateAddress(address)}` : 'No wallet required'}
+              Chain step: MnemosyneRegistry.submit on 0G Galileo (~0.005 A0GI from API operator wallet, not MetaMask).
+              {' '}{address ? `You: ${truncateAddress(address)} (attribution).` : ''}
             </span>
             <BtnGhost onClick={() => router.back()}>CANCEL</BtnGhost>
             <BtnPrimary onClick={handleSubmit} disabled={!fullContent.trim()}>

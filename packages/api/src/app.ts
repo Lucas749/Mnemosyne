@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { randomBytes } from 'crypto'
+import { privateKeyToAccount } from 'viem/accounts'
 import { generateEmbedding } from '@mnemosyne/compute'
 import {
   createStorageClient,
@@ -14,12 +15,14 @@ import {
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
 import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
-import { upsertEntry, getDbEntry, getAllDbEntries, deleteEntry, addDiscussion, getDiscussions } from './db.js'
+import { registerEntryEnsName } from './ens.js'
+import { upsertEntry, getDbEntry, migrateEntryPrimaryKey, getAllDbEntries, deleteEntry, addDiscussion, getDiscussions } from './db.js'
 import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
 import type { StorageClient } from '@mnemosyne/storage'
 import type { StoreRequest, StoreResponse, QueryRequest, QueryResponse } from './types.js'
+import { withRetry, withRetryBroad } from './retry.js'
 
 interface CachedEntry {
   content: string
@@ -30,12 +33,12 @@ interface CachedEntry {
   submittedBy?: string
   submitterAddress?: `0x${string}`
   onchainEntryId?: `0x${string}`
+  /** EntryBlob.id for AES decryption (may differ from on-chain bytes32 cache key). */
+  encryptionEntryId?: string
   submitTxHash?: `0x${string}`
   challengeWindowEnd?: number
   inftTokenId?: bigint
-  // Graph edges: entryId → similarity score for pairs above threshold
   edges?: Record<string, number>
-  // Agents that have queried this entry (from authorizeUsage calls)
   queriedByAgents?: string[]
 }
 
@@ -67,19 +70,29 @@ const INDEXER_URLS = [
 
 async function downloadWithFallback(_primaryStorage: StorageClient, storageRef: string, entryId: string): Promise<EntryBlob> {
   const errors: string[] = []
+  const rpcUrl = process.env.ZG_RPC_URL
   for (const indexerRpc of INDEXER_URLS) {
     try {
-      const client = createStorageClient({
-        privateKey: process.env.ZG_PRIVATE_KEY ?? '',
-        rpc: process.env.ZG_RPC_URL,
-        indexerRpc,
-      })
-      return await downloadEntryBlob(client, storageRef, entryId)
+      return await withRetry(
+        async () => {
+          const client = createStorageClient({
+            privateKey: process.env.ZG_PRIVATE_KEY ?? '',
+            ...(rpcUrl ? { rpcUrl } : {}),
+            indexerRpc,
+          })
+          return downloadEntryBlob(client, storageRef, entryId)
+        },
+        { maxAttempts: 4, baseDelayMs: 350, label: `[download] ${indexerRpc.replace('https://', '')}` },
+      )
     } catch (err) {
       errors.push(`${indexerRpc.replace('https://', '')}: ${(err as Error).message?.slice(0, 80)}`)
     }
   }
   throw new Error(`file not found on any 0G indexer. Errors: ${errors.join(' | ')}`)
+}
+
+function manifestDecryptId(e: ManifestEntry): string {
+  return e.storageDecryptId ?? e.entryId
 }
 
 // TODO: add Authorization: Bearer token middleware once API is publicly hosted
@@ -119,20 +132,36 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     jobs.set(jobId, { status: 'pending', createdAt: Date.now() })
     res.status(202).json({ jobId })
 
-    const body        = req.body as StoreRequest
-    const entryId     = '0x' + randomBytes(16).toString('hex')
-    const domain      = body.domain ?? 'factual'
-    const tags        = body.tags ?? []
-    const submittedBy = body.submittedBy ?? 'agent'
+    const body           = req.body as StoreRequest
+    const encryptionKeyId = '0x' + randomBytes(16).toString('hex')
+    const domain         = body.domain ?? 'factual'
+    const tags           = body.tags ?? []
+    const submittedBy    = body.submittedBy ?? 'agent'
 
-    const JOB_TIMEOUT_MS = 240_000
+    const STORE_JOB_RAW = Number(process.env.STORE_JOB_TIMEOUT_MS ?? 1_800_000)
+    const STORE_JOB_MS = Number.isFinite(STORE_JOB_RAW) && STORE_JOB_RAW >= 120_000 ? STORE_JOB_RAW : 1_800_000
     const timeout = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error('job timed out after 240s — 0G storage unresponsive')), JOB_TIMEOUT_MS)
+      setTimeout(
+        () => reject(new Error(`job timed out after ${STORE_JOB_MS}ms — 0G storage / Galileo receipts / ENS`)),
+        STORE_JOB_MS,
+      )
     )
 
     ;(async () => {
+      const tJob = Date.now()
+      const slog = (...parts: unknown[]) => console.log(`[store:${jobId} +${Date.now() - tJob}ms]`, ...parts)
+      const submitterSnip =
+        typeof submittedBy === 'string' && submittedBy.length > 24
+          ? `${submittedBy.slice(0, 10)}…${submittedBy.slice(-6)}`
+          : String(submittedBy)
+
+      slog(
+        `START submitter=${submitterSnip} domain="${domain}" tags=${tags.length} contentChars=${body.content?.length ?? 0} operatorSet=${!!process.env.ZG_PRIVATE_KEY} ensSignerSet=${!!process.env.ENS_PRIVATE_KEY} jobTimeoutMs=${STORE_JOB_MS}`,
+      )
+
+      slog(`STEP 0 encryptionKeyId(upload)=${encryptionKeyId}`)
       const blob: EntryBlob = {
-        id: entryId,
+        id: encryptionKeyId,
         content: body.content,
         domain,
         tags,
@@ -142,32 +171,97 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         checksum: '',
       }
 
-      const storageRef = await Promise.race([uploadEntryBlob(storage, blob), timeout])
+      const storageRef = await Promise.race([
+        withRetryBroad(() => uploadEntryBlob(storage, blob), {
+          maxAttempts: 6,
+          baseDelayMs: 400,
+          label: `[store] job=${jobId} upload blob`,
+        }),
+        timeout,
+      ])
+      slog(`STEP 1 0G blob uploaded storageRef=${storageRef}`)
 
-      // Compute embeddings if available; fall back gracefully when 0G compute is down
       let embeddingRef = ''
       let embVector: number[] = []
       if (compute) {
         try {
-          const embBlob = await Promise.race([generateEmbedding(compute, entryId, body.content), timeout])
+          const embBlob = await Promise.race([
+            generateEmbedding(compute, encryptionKeyId, body.content),
+            timeout,
+          ])
           embVector = embBlob.vector
-          embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
+          embeddingRef = await Promise.race([
+            withRetryBroad(() => uploadEmbeddingBlob(storage, embBlob), {
+              maxAttempts: 5,
+              baseDelayMs: 400,
+              label: `[store] job=${jobId} upload embedding`,
+            }),
+            timeout,
+          ])
         } catch (embErr) {
-          console.warn('[store] embedding skipped:', (embErr as Error).message?.slice(0, 80))
+          slog(`STEP 2 embedding SKIPPED ${(embErr as Error).message?.slice?.(0, 120)}`)
         }
       }
+      if (embeddingRef) {
+        slog(`STEP 2 embedding uploaded ref=${embeddingRef} vectorDims=${embVector.length}`)
+      } else {
+        slog(`STEP 2 no embedding ref vectorDims=${embVector.length}`)
+      }
 
-      const onchainSubmission = await submitOnChain(storageRef, embeddingRef, tags, domain).catch((err) => {
-        console.error('[store] submitOnChain failed:', (err as Error).message ?? err)
-        return { entryId: null, txHash: null }
-      })
+      slog('STEP 3 Galileo MnemosyneRegistry.submit (see [submitOnChain …] logs for receipt timing)')
+
+      const zgConfigured = !!(process.env.ZG_PRIVATE_KEY && String(process.env.ZG_PRIVATE_KEY).trim())
+      const submitAttempts = zgConfigured ? 5 : 1
+      let onchainSubmission: Awaited<ReturnType<typeof submitOnChain>> = { entryId: null, txHash: null }
+
+      for (let a = 1; a <= submitAttempts; a++) {
+        try {
+          onchainSubmission = await submitOnChain(storageRef, embeddingRef, tags, domain)
+        } catch (err) {
+          slog(`submit attempt ${a}/${submitAttempts} THREW`, (err as Error)?.message ?? err)
+          if (!zgConfigured || a === submitAttempts) {
+            onchainSubmission = { entryId: null, txHash: null }
+            break
+          }
+          const waitMs = 700 * 2 ** (a - 1)
+          await new Promise(r => setTimeout(r, waitMs))
+          continue
+        }
+        const ok = !!(onchainSubmission.txHash ?? onchainSubmission.entryId)
+        if (ok || !zgConfigured || a === submitAttempts) break
+        console.warn(`[store:${jobId}] submit attempt ${a}/${submitAttempts}: no tx/id yet → retry backoff`)
+        await new Promise(r => setTimeout(r, 700 * 2 ** (a - 1)))
+      }
       const onchainEntryId = onchainSubmission.entryId
+      const trackedTxHash = onchainSubmission.txHash
+
+      const dbPublicId = onchainEntryId ?? encryptionKeyId
+
+      if (onchainEntryId && encryptionKeyId !== onchainEntryId && trackedTxHash) {
+        const mv = migrateEntryPrimaryKey(encryptionKeyId, onchainEntryId, trackedTxHash)
+        if (!mv.ok) {
+          slog(`SQLite migrate FAILED ${encryptionKeyId}→${onchainEntryId}: ${mv.reason}`)
+        } else {
+          slog(`SQLite migrate OK uploadKey→canonical bytes32`)
+        }
+        cache.delete(encryptionKeyId)
+      }
+
+      if (!(onchainSubmission.txHash || onchainEntryId)) {
+        slog(
+          `WARN STEP 4 no Galileo submit visible — offline dbPublicId=${dbPublicId}; check ZG_PRIVATE_KEY MNEMOSYNE_REGISTRY_ADDRESS operator balance MIN_STAKE`,
+        )
+      } else {
+        slog(
+          `STEP 4 OK dbPublicId=${dbPublicId} onchainBytes32=${onchainEntryId ?? 'null'} submitTx=${onchainSubmission.txHash ?? 'null'} rowMigratedFromUpload=${!!onchainEntryId && encryptionKeyId !== dbPublicId}`,
+        )
+      }
+
       const CHALLENGE_WINDOW_MS = 5 * 60 * 1000 // matches contract (5 min testnet)
       const challengeWindowEnd = onchainEntryId
         ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
         : undefined
 
-      // Compute similarity edges against all existing entries (only when embeddings available)
       const EDGE_THRESHOLD = 0.6
       const edges: Record<string, number> = {}
       if (embVector.length > 0) {
@@ -176,75 +270,138 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
           const sim = cosineSimilarity(embVector, existing.vector)
           if (sim >= EDGE_THRESHOLD) {
             edges[existingId] = Math.round(sim * 1000) / 1000
-            // Add back-edge on existing entry
             const ex = cache.get(existingId)!
-            cache.set(existingId, { ...ex, edges: { ...ex.edges, [entryId]: edges[existingId] } })
+            cache.set(existingId, { ...ex, edges: { ...ex.edges, [dbPublicId]: edges[existingId] } })
           }
         }
       }
 
-      const cacheEntry = {
+      const cacheEntry: CachedEntry = {
         content: body.content,
         vector: embVector,
         storageRef,
         tags,
         domain,
         submittedBy,
+        encryptionEntryId: encryptionKeyId,
         onchainEntryId: onchainEntryId ?? undefined,
         submitTxHash: onchainSubmission.txHash ?? undefined,
         challengeWindowEnd,
         edges,
         queriedByAgents: [],
       }
-      cache.set(entryId, cacheEntry)
-      // Also index by on-chain entryId so /unlock works with the blockchain ID
-      if (onchainEntryId) {
-        cache.set(onchainEntryId, cacheEntry)
-      }
+      cache.set(dbPublicId, cacheEntry)
 
-      // Use on-chain ID when available (simulateContract now returns the real unique bytes32).
-      // Fall back to local random ID if chain submission failed.
-      const dbEntryId = onchainEntryId ?? entryId
-      upsertEntry(dbEntryId, {
+      upsertEntry(dbPublicId, {
         storageRef, tags, domain, submitter: submittedBy,
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
         submitTxHash: onchainSubmission.txHash ?? null,
+        encryptionEntryId: encryptionKeyId,
       })
-      console.log(`[store] saved entryId=${dbEntryId} onchain=${!!onchainEntryId}`)
+      slog(`STEP 5 sqlite+cache upsert entryId=${dbPublicId}`)
 
       let manifestRef: string | undefined
+      let entryEnsName: string | undefined
       const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
-      if (submittedBy.endsWith('.eth') && ensKey) {
-        const currentRef = await getMemoryIndex(submittedBy).catch(() => null)
-        const entry: ManifestEntry = {
-          entryId,
+      const collectiveManifest =
+        process.env.ENS_MEMORY_INDEX_DOMAIN?.trim() || 'mnemosyne.eth'
+
+      const manifestOwners: string[] = []
+      if (submittedBy.endsWith('.eth')) manifestOwners.push(submittedBy)
+      if (ensKey && !manifestOwners.some(o => o.toLowerCase() === collectiveManifest.toLowerCase())) {
+        manifestOwners.push(collectiveManifest)
+      }
+
+      if (manifestOwners.length > 0 && ensKey) {
+        slog(`STEP 6 ENS manifest owners=[${manifestOwners.join(',')}] collective=${collectiveManifest}`)
+        const manifestEntryPayload: ManifestEntry = {
+          entryId: dbPublicId,
+          ...(encryptionKeyId !== dbPublicId ? { storageDecryptId: encryptionKeyId } : {}),
           storageRef,
           embeddingRef,
-          domain: domain as any,
+          domain: domain as ManifestEntry['domain'],
           tags,
           status: 'active',
-          addedAt: Math.floor(Date.now() / 1000),
+          submittedAt: Math.floor(Date.now() / 1000),
         }
-        const nextManifestRef = await addEntryToManifest(storage, currentRef, submittedBy, entry)
-        try {
-          await setMemoryIndex(ensKey, submittedBy, nextManifestRef)
-          manifestRef = nextManifestRef
-        } catch (err) {
-          console.error('[ens] setMemoryIndex failed:', (err as Error)?.message ?? err)
+
+        for (const ownerEns of manifestOwners) {
+          slog(`STEP 6a owner=${ownerEns} getMemoryIndex…`)
+          const currentRef = await withRetryBroad(() => getMemoryIndex(ownerEns), {
+            maxAttempts: 4,
+            baseDelayMs: 400,
+            label: `[store] getMemoryIndex(${ownerEns})`,
+          }).catch(() => null)
+          const nextManifestRef = await withRetryBroad(
+            () => addEntryToManifest(storage, currentRef, ownerEns, manifestEntryPayload),
+            { maxAttempts: 5, baseDelayMs: 500, label: `[store] addEntryToManifest(${ownerEns})` },
+          )
+          slog(`STEP 6b owner=${ownerEns} manifestRef(uploaded manifest)=${nextManifestRef}`)
+          try {
+            await withRetryBroad(
+              () => setMemoryIndex(ensKey, ownerEns, nextManifestRef),
+              {
+                maxAttempts: 6,
+                baseDelayMs: 600,
+                label: `[store] setMemoryIndex(${ownerEns})`,
+              },
+            )
+            manifestRef = nextManifestRef
+            slog(`STEP 6c owner=${ownerEns} setMemoryIndex txHash(await identity pkg logs)`)
+          } catch (err) {
+            slog(`setMemoryIndex FAILED owner=${ownerEns}`, (err as Error)?.message ?? err)
+          }
         }
+      } else {
+        slog(`STEP 6 ENS manifest SKIP (owners=${manifestOwners.length} ensKey=${!!ensKey})`)
+      }
+
+      // Per-entry Sepolia subdomain (`*.mnemo.mnemosyne.eth`) — keyed by canonical `dbPublicId`
+      // even when Galileo receipt/simulate did not yield `onchainEntryId` yet.
+      if (ensKey) {
+        const targetAddress = privateKeyToAccount(ensKey).address
+        if (targetAddress) {
+          try {
+            slog(`STEP 7 ENS entry subdomain register entryId=${dbPublicId} targetAddr=${targetAddress}`)
+            const ensResult = await withRetryBroad(
+              () =>
+                registerEntryEnsName({
+                  privateKey: ensKey,
+                  entryId: dbPublicId,
+                  targetAddress,
+                  parentName: 'mnemosyne.eth',
+                  trace: `[store:${jobId}]`,
+                }),
+              { maxAttempts: 4, baseDelayMs: 1_400, label: `[store] registerEntryEnsName` },
+            )
+            entryEnsName = ensResult.fullName
+            slog(`STEP 7 DONE entryEnsName=${entryEnsName}`)
+          } catch (ensErr) {
+            slog(`STEP 7 registerEntryEnsName FAILED`, (ensErr as Error)?.message ?? ensErr)
+          }
+        }
+      } else {
+        slog('STEP 7 ENS subdomain SKIP ENS_PRIVATE_KEY unset')
       }
 
       const result: StoreResponse = {
-        entryId: dbEntryId,
+        entryId: dbPublicId,
         storageRef,
         embeddingRef,
         manifestRef,
         submitTxHash: onchainSubmission.txHash ?? undefined,
+        entryEnsName,
       }
       jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
+      slog(`DONE json=${JSON.stringify({ entryId: result.entryId, storageRef: result.storageRef, manifestRef: result.manifestRef ?? '', submitTxHash: result.submitTxHash ?? '', entryEnsName: result.entryEnsName ?? '' })}`)
     })().catch((err) => {
-      console.error('[store] job failed:', err?.message ?? err)
-      jobs.set(jobId, { status: 'error', error: err?.message ?? String(err), createdAt: Date.now() })
+      const msg =
+        (err as { shortMessage?: string })?.shortMessage
+        ?? (err as { details?: string })?.details
+        ?? (err as { message?: string })?.message
+        ?? String(err)
+      console.error(`[store:${jobId}] FAILED:`, msg, err)
+      jobs.set(jobId, { status: 'error', error: msg, createdAt: Date.now() })
     })
   })
 
@@ -330,39 +487,42 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     const { entryId, queriedBy } = req.body as { entryId: string; queriedBy?: string }
     if (!entryId) { res.status(400).json({ error: 'entryId required' }); return }
 
-    // 1. In-memory cache (fastest)
+    const dbPeek = getDbEntry(entryId)
     let cached = cache.get(entryId)
 
-    // 2. SQLite DB (survives restarts + 0G outages)
-    if (!cached) {
-      const dbEntry = getDbEntry(entryId)
-      if (dbEntry?.content) {
-        cached = {
-          content: dbEntry.content, vector: [], storageRef: dbEntry.storageRef ?? '',
-          tags: dbEntry.tags, domain: dbEntry.domain ?? undefined,
-          submittedBy: dbEntry.submitter ?? undefined,
-          onchainEntryId: entryId as `0x${string}`,
-        }
-        cache.set(entryId, cached)
+    if (!cached && dbPeek?.content) {
+      cached = {
+        content: dbPeek.content, vector: [], storageRef: dbPeek.storageRef ?? '',
+        tags: dbPeek.tags, domain: dbPeek.domain ?? undefined,
+        submittedBy: dbPeek.submitter ?? undefined,
+        onchainEntryId: entryId as `0x${string}`,
+        encryptionEntryId: dbPeek.encryptionEntryId,
       }
+      cache.set(entryId, cached)
     }
 
-    // 3. Chain + 0G Storage (slowest, may fail on testnet)
     if (!cached) {
       const onChainEntry = await getEntryFromChain(entryId as `0x${string}`)
       if (!onChainEntry) {
         res.status(404).json({ error: 'entry not found on chain' }); return
       }
       try {
-        const blob = await downloadWithFallback(storage, onChainEntry.storageRef, entryId)
+        const decryptKey =
+          dbPeek?.encryptionEntryId ?? getDbEntry(entryId)?.encryptionEntryId ?? entryId
+        const blob = await downloadWithFallback(storage, onChainEntry.storageRef, decryptKey)
         cached = {
           content: blob.content, vector: [], storageRef: onChainEntry.storageRef,
           tags: onChainEntry.tags, domain: blob.domain, submittedBy: blob.submittedBy,
           submitterAddress: onChainEntry.submitter, onchainEntryId: entryId as `0x${string}`,
+          encryptionEntryId: blob.id,
           inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId : undefined,
         }
         cache.set(entryId, cached)
-        upsertEntry(entryId, { storageRef: onChainEntry.storageRef, tags: onChainEntry.tags, domain: blob.domain, submitter: blob.submittedBy ?? onChainEntry.submitter, content: blob.content, status: onChainEntry.status })
+        upsertEntry(entryId, {
+          storageRef: onChainEntry.storageRef, tags: onChainEntry.tags, domain: blob.domain,
+          submitter: blob.submittedBy ?? onChainEntry.submitter, content: blob.content, status: onChainEntry.status,
+          encryptionEntryId: blob.id,
+        })
       } catch (err) {
         res.status(502).json({ error: '0G Storage unavailable', detail: (err as Error).message }); return
       }
@@ -444,7 +604,6 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   app.get('/content/:entryId', async (req, res) => {
     const entryId = req.params.entryId as `0x${string}`
 
-    // 1. In-memory cache
     const cached = cache.get(entryId)
     if (cached) {
       res.json({
@@ -458,7 +617,6 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       return
     }
 
-    // 2. SQLite DB
     const dbEntry = getDbEntry(entryId)
     if (dbEntry?.content) {
       res.json({
@@ -472,16 +630,15 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       return
     }
 
-    // 3. Chain + 0G Storage
     const onChainEntry = await getEntryFromChain(entryId)
     if (!onChainEntry) {
       res.status(404).json({ error: 'Entry not found on chain' })
       return
     }
 
-    // Download content from 0G Storage — try both indexers
     try {
-      const blob = await downloadWithFallback(storage, onChainEntry.storageRef, entryId)
+      const decryptKey = dbEntry?.encryptionEntryId ?? entryId
+      const blob = await downloadWithFallback(storage, onChainEntry.storageRef, decryptKey)
       const entry: CachedEntry = {
         content: blob.content,
         vector: [],
@@ -491,10 +648,11 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         submittedBy: blob.submittedBy,
         submitterAddress: onChainEntry.submitter,
         onchainEntryId: entryId,
+        encryptionEntryId: blob.id,
+        submitTxHash: (dbEntry?.submitTxHash as `0x${string}` | undefined) ?? undefined,
         inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId : undefined,
       }
       cache.set(entryId, entry)
-      // Persist full content to DB
       upsertEntry(entryId, {
         storageRef: onChainEntry.storageRef,
         tags: onChainEntry.tags,
@@ -503,6 +661,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         content: blob.content,
         status: onChainEntry.status,
         inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId.toString() : '0',
+        submitTxHash: dbEntry?.submitTxHash ?? undefined,
+        encryptionEntryId: blob.id,
       })
       res.json({
         entryId,
@@ -510,7 +670,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         tags: blob.tags,
         domain: blob.domain,
         submittedBy: blob.submittedBy,
-        submitTxHash: null,
+        submitTxHash: dbEntry?.submitTxHash ?? null,
       })
     } catch (err) {
       res.status(502).json({ error: '0G Storage fetch failed', detail: (err as Error).message })
@@ -585,17 +745,23 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
     await Promise.all(
       active.map(async (entry) => {
-        const [embBlob, entryBlob] = await Promise.all([
-          downloadEmbeddingBlob(storage, entry.embeddingRef),
-          downloadEntryBlob(storage, entry.storageRef, entry.entryId),
-        ])
-        cache.set(entry.entryId, {
-          content: entryBlob.content,
-          vector: embBlob.vector,
-          storageRef: entry.storageRef,
-          tags: entry.tags,
-          domain: entry.domain,
-        })
+        try {
+          const dk = manifestDecryptId(entry)
+          const entryBlob = await downloadEntryBlob(storage, entry.storageRef, dk)
+          const embVector = entry.embeddingRef
+            ? await downloadEmbeddingBlob(storage, entry.embeddingRef).then(b => b.vector).catch(() => [])
+            : []
+          cache.set(entry.entryId, {
+            content: entryBlob.content,
+            vector: embVector,
+            storageRef: entry.storageRef,
+            tags: entry.tags,
+            domain: entry.domain,
+            encryptionEntryId: entryBlob.id,
+          })
+        } catch (err) {
+          console.warn('[load-manifest] skipping entry:', entry.entryId, (err as Error).message?.slice(0, 80))
+        }
       }),
     )
 
@@ -608,34 +774,123 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
   app.get('/load-from-ens/:ensName', async (req, res) => {
     const ensName     = req.params.ensName
-    const manifestRef = await getMemoryIndex(ensName)
+    let manifestRef = await getMemoryIndex(ensName)
 
     if (!manifestRef) {
-      res.status(404).json({ error: `No memory.index found for ${ensName}` })
+      const dbEntries = getAllDbEntries()
+        .filter(e => e.submitter?.toLowerCase() === ensName.toLowerCase() && e.content)
+
+      if (dbEntries.length === 0) {
+        res.status(404).json({ error: `No memory.index found for ${ensName}` })
+        return
+      }
+
+      // Fallback bootstrap: load directly from DB so the endpoint still works
+      // even when ENS text records are temporarily missing.
+      for (const e of dbEntries) {
+        cache.set(e.entryId, {
+          content: e.content!,
+          vector: [],
+          storageRef: e.storageRef ?? '',
+          tags: e.tags,
+          domain: e.domain ?? undefined,
+          submittedBy: ensName,
+          onchainEntryId: e.entryId as `0x${string}`,
+          encryptionEntryId: e.encryptionEntryId,
+        })
+      }
+
+      // Self-heal: if possible, reconstruct and write memory.index back to ENS.
+      const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
+      const withStorage = dbEntries.filter(e => !!e.storageRef)
+      if (ensKey && withStorage.length > 0) {
+        try {
+          let currentRef: string | null = null
+          const ordered = [...withStorage].sort((a, b) => (a.submittedAt ?? 0) - (b.submittedAt ?? 0))
+          for (const e of ordered) {
+            currentRef = await addEntryToManifest(storage, currentRef, ensName, {
+              entryId: e.entryId,
+              ...(e.encryptionEntryId !== e.entryId ? { storageDecryptId: e.encryptionEntryId } : {}),
+              storageRef: e.storageRef!,
+              embeddingRef: '',
+              domain: (e.domain ?? 'factual') as ManifestEntry['domain'],
+              tags: e.tags,
+              status: 'active',
+              submittedAt: e.submittedAt ?? Math.floor(Date.now() / 1000),
+            })
+          }
+          if (currentRef) {
+            await setMemoryIndex(ensKey, ensName, currentRef)
+            manifestRef = currentRef
+          }
+        } catch (err) {
+          console.error('[load-from-ens] memory.index repair failed:', (err as Error).message ?? err)
+        }
+      }
+
+      res.json({
+        loaded: dbEntries.length,
+        total: cache.size,
+        manifestRef: manifestRef ?? 'db-fallback',
+        ensName,
+      })
       return
     }
 
-    const manifest = await downloadManifest(storage, manifestRef)
-    const active   = activeEntries(manifest)
+    try {
+      const manifest = await downloadManifest(storage, manifestRef)
+      const active   = activeEntries(manifest)
 
-    await Promise.all(
-      active.map(async (entry) => {
-        const [embBlob, entryBlob] = await Promise.all([
-          downloadEmbeddingBlob(storage, entry.embeddingRef),
-          downloadEntryBlob(storage, entry.storageRef, entry.entryId),
-        ])
-        cache.set(entry.entryId, {
-          content: entryBlob.content,
-          vector: embBlob.vector,
-          storageRef: entry.storageRef,
-          tags: entry.tags,
-          domain: entry.domain,
+      await Promise.all(
+        active.map(async (entry) => {
+          try {
+            const dk = manifestDecryptId(entry)
+            const entryBlob = await downloadEntryBlob(storage, entry.storageRef, dk)
+            const embVector = entry.embeddingRef
+              ? await downloadEmbeddingBlob(storage, entry.embeddingRef).then(b => b.vector).catch(() => [])
+              : []
+            cache.set(entry.entryId, {
+              content: entryBlob.content,
+              vector: embVector,
+              storageRef: entry.storageRef,
+              tags: entry.tags,
+              domain: entry.domain,
+              submittedBy: ensName,
+              encryptionEntryId: entryBlob.id,
+            })
+          } catch (err) {
+            console.warn('[load-from-ens] skipping entry:', entry.entryId, (err as Error).message?.slice(0, 80))
+          }
+        }),
+      )
+
+      res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
+      return
+    } catch (err) {
+      console.error('[load-from-ens] manifest load failed, falling back to DB:', (err as Error).message ?? err)
+      const dbEntries = getAllDbEntries()
+        .filter(e => e.submitter?.toLowerCase() === ensName.toLowerCase() && e.content)
+      for (const e of dbEntries) {
+        cache.set(e.entryId, {
+          content: e.content!,
+          vector: [],
+          storageRef: e.storageRef ?? '',
+          tags: e.tags,
+          domain: e.domain ?? undefined,
           submittedBy: ensName,
+          onchainEntryId: e.entryId as `0x${string}`,
+          encryptionEntryId: e.encryptionEntryId,
         })
-      }),
-    )
-
-    res.json({ loaded: active.length, total: cache.size, manifestRef, ensName })
+      }
+      res.json({
+        loaded: dbEntries.length,
+        total: cache.size,
+        manifestRef,
+        ensName,
+        fallback: 'db',
+      })
+      return
+    }
   })
 
   // ─── GET /graph ──────────────────────────────────────────────────────────

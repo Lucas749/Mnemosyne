@@ -9,7 +9,9 @@ export type StoreResult = {
   entryId: string
   storageRef: string
   embeddingRef: string
-  manifestRef: string
+  manifestRef?: string
+  submitTxHash?: string
+  entryEnsName?: string
 }
 
 export type QueryMatch = {

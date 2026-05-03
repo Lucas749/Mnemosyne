@@ -1,6 +1,8 @@
-import { createWalletClient, createPublicClient, http, defineChain } from 'viem'
+import { createWalletClient, createPublicClient, http, defineChain, decodeEventLog } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { routeRoyalty } from '@mnemosyne/payments'
+
+import { withRetry } from './retry.js'
 
 // Deployed contract addresses — overridable via env vars
 const ADDR = {
@@ -48,6 +50,11 @@ const REGISTRY_ABI = [
   { name: 'getAllEntries', type: 'function', stateMutability: 'view',
     inputs: [{ name: 'offset', type: 'uint256' }, { name: 'limit', type: 'uint256' }], outputs: [{ type: 'bytes32[]' }] },
   { name: 'getTotalEntryCount', type: 'function', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint256' }] },
+  { type: 'event', name: 'EntrySubmitted', inputs: [
+    { name: 'entryId', type: 'bytes32', indexed: true },
+    { name: 'submitter', type: 'address', indexed: true },
+    { name: 'stake', type: 'uint256', indexed: false },
+  ] },
   { type: 'event', name: 'EntryActivated',
     inputs: [{ name: 'entryId', type: 'bytes32', indexed: true }, { name: 'inftTokenId', type: 'uint256', indexed: false }] },
 ] as const
@@ -96,6 +103,28 @@ const DOMAIN_INDEX: Record<string, number> = {
 }
 
 const MIN_STAKE = BigInt('5000000000000000') // 0.005 A0GI
+
+/** Exported for docs / tooling — must match MnemosyneRegistry.MIN_STAKE on Galileo testnet */
+export const REGISTRY_SUBMIT_STAKE_WEI = MIN_STAKE
+
+function decodeEntrySubmittedFromReceipt(
+  receipt: { logs: readonly { address: `0x${string}`; data: `0x${string}`; topics: readonly `0x${string}`[] }[] },
+  registry: `0x${string}`,
+): `0x${string}` | null {
+  const reg = registry.toLowerCase()
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== reg) continue
+    try {
+      const decoded = decodeEventLog({ abi: REGISTRY_ABI, data: log.data, topics: log.topics })
+      if (decoded.eventName === 'EntrySubmitted') {
+        return decoded.args.entryId as `0x${string}`
+      }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
 
 function clients() {
   const key = process.env.ZG_PRIVATE_KEY
@@ -198,6 +227,10 @@ export function getOperatorAddress(): `0x${string}` | null {
   return privateKeyToAccount(key.startsWith('0x') ? key as `0x${string}` : `0x${key}`).address
 }
 
+const ZG_RECEIPT_POLL_MS = Number(process.env.ZG_RECEIPT_POLL_MS ?? 4_000)
+const ZG_RECEIPT_WAIT_MS = Number(process.env.ZG_RECEIPT_WAIT_MS ?? 600_000)
+const ZG_RECEIPT_FALLBACK_POLLS = Math.max(60, Number(process.env.ZG_RECEIPT_FALLBACK_POLLS ?? 180))
+
 /**
  * Call MnemosyneRegistry.submit() on 0G testnet.
  * Returns the on-chain bytes32 entryId from the transaction receipt, or null if unconfigured.
@@ -208,38 +241,123 @@ export async function submitOnChain(
   tags: string[],
   domain: string,
 ): Promise<{ entryId: `0x${string}` | null; txHash: `0x${string}` | null }> {
+  const t0 = Date.now()
+  const stamp = () => `[submitOnChain +${Date.now() - t0}ms]`
+  const rpcUrl = process.env.ZG_RPC_URL ?? 'https://evmrpc-testnet.0g.ai'
   const c = clients()
-  if (!c) return { entryId: null, txHash: null }
+  if (!c) {
+    console.error(
+      `[submitOnChain ${stamp()}] skip: ZG_PRIVATE_KEY is missing — no Galileo MnemosyneRegistry.submit; storage may succeed without chain.`,
+    )
+    return { entryId: null, txHash: null }
+  }
   const registry = ADDR.registry
-  const args = [storageRef, embeddingRef, tags, DOMAIN_INDEX[domain] ?? 0] as const
+  const domainKey = typeof domain === 'string' ? domain.trim().toLowerCase() : 'factual'
+  const domainIndex = DOMAIN_INDEX[domainKey] ?? 0
+  const args = [storageRef, embeddingRef, tags, domainIndex] as const
 
-  // Simulate first to capture the bytes32 return value before broadcasting.
-  // writeContract doesn't expose return values; simulateContract does.
+  console.log(
+    `${stamp()} args ready registry=${registry} operator=${c.account.address} stakeWei=${MIN_STAKE.toString()} domain="${domain}"->enum=${domainIndex} tags=${tags.length} storageRefLen=${storageRef.length} embedding=${embeddingRef ? 'yes' : 'empty'}`,
+  )
+
+  // Simulate first — tx may succeed even when simulate is flaky on some RPCs.
   let simulatedId: `0x${string}` | null = null
   try {
-    const { result } = await c.pub.simulateContract({
+    const { result } = await withRetry(
+      () => c.pub.simulateContract({
+        address: registry,
+        abi: REGISTRY_ABI,
+        functionName: 'submit',
+        args,
+        value: MIN_STAKE,
+        account: c.account,
+      }),
+      { maxAttempts: 3, baseDelayMs: 280, label: '[submitOnChain] simulate' },
+    )
+    simulatedId = result as `0x${string}`
+    if (simulatedId) console.log(`${stamp()} simulateContract ok preliminaryBytes32=${simulatedId}`)
+  } catch (simErr) {
+    const em = simErr as { shortMessage?: string; message?: string; details?: string }
+    console.warn(`${stamp()} simulateContract failed — continuing to write anyway:`,
+      em.shortMessage ?? em.message ?? em.details ?? String(simErr).slice(0, 160))
+  }
+
+  console.log(`${stamp()} MnemosyneRegistry.submit writeContract broadcast…`)
+
+  const hash = await withRetry(
+    () => c.wallet.writeContract({
       address: registry,
       abi: REGISTRY_ABI,
       functionName: 'submit',
       args,
       value: MIN_STAKE,
-      account: c.account,
+    }),
+    { maxAttempts: 4, baseDelayMs: 500, label: '[submitOnChain] writeContract' },
+  )
+  console.log(`${stamp()} HASH_BROADCAST explorer https://chainscan-galileo.0g.ai/tx/${hash}`)
+
+  const waitPrimaryMs = Number.isFinite(ZG_RECEIPT_WAIT_MS) && ZG_RECEIPT_WAIT_MS > 60_000 ? ZG_RECEIPT_WAIT_MS : 600_000
+  const POLL_MS = Number.isFinite(ZG_RECEIPT_POLL_MS) && ZG_RECEIPT_POLL_MS > 500 ? ZG_RECEIPT_POLL_MS : 4_000
+  const POLL_MAX = Number.isFinite(ZG_RECEIPT_FALLBACK_POLLS) ? Math.max(60, ZG_RECEIPT_FALLBACK_POLLS) : 180
+
+  let receipt: Awaited<ReturnType<typeof c.pub.waitForTransactionReceipt>> | null = null
+
+  console.log(`${stamp()} waitForTransactionReceipt start timeoutMs=${waitPrimaryMs} pollMs=${POLL_MS} HASH=${hash}`)
+  try {
+    receipt = await c.pub.waitForTransactionReceipt({
+      hash,
+      timeout: waitPrimaryMs,
+      pollingInterval: POLL_MS,
     })
-    simulatedId = result as `0x${string}`
-  } catch (simErr) {
-    console.warn('[submitOnChain] simulate failed:', (simErr as Error).message?.slice(0, 80))
+    console.log(
+      `${stamp()} waitForTransactionReceipt resolved block=${receipt.blockNumber?.toString() ?? '?'} status=${receipt.status}`,
+    )
+  } catch (waitErr) {
+    console.warn(
+      `${stamp()} waitForTransactionReceipt gave up (${(waitErr as Error)?.shortMessage ?? (waitErr as Error)?.message ?? waitErr}); manual receipt polls ${POLL_MAX}×/${POLL_MS}ms SAME_HASH`,
+      hash,
+    )
+    for (let i = 0; i < POLL_MAX; i++) {
+      receipt = await c.pub.getTransactionReceipt({ hash }).catch(() => null)
+      if (receipt) {
+        console.log(
+          `${stamp()} receipt OK via fallback poll (${i + 1}/${POLL_MAX}) block=${receipt.blockNumber?.toString() ?? '?'} status=${receipt.status} logs=${receipt.logs?.length ?? 0} gasUsed=${receipt.gasUsed?.toString() ?? '?'}`,
+        )
+        break
+      }
+      if ((i + 1) % 15 === 0) {
+        const pending = await c.pub.getTransaction({ hash }).catch(() => null)
+        console.warn(
+          `${stamp()} fallback heartbeat ${i + 1}/${POLL_MAX}: no receipt yet; getTransaction=${pending ? `nonce=${pending.nonce}` : 'null'}`,
+        )
+      }
+      await new Promise(r => setTimeout(r, POLL_MS))
+    }
+    if (!receipt) {
+      console.error(`${stamp()} RECEIPT MISSING after primary+${POLL_MAX} polls — HASH=${hash} persisted; next poll will need explorer/manual`)
+      return { entryId: simulatedId, txHash: hash }
+    }
   }
 
-  const hash = await c.wallet.writeContract({
-    address: registry,
-    abi: REGISTRY_ABI,
-    functionName: 'submit',
-    args,
-    value: MIN_STAKE,
-  })
-  await c.pub.waitForTransactionReceipt({ hash })
-  console.log(`[submitOnChain] tx=${hash} entryId=${simulatedId}`)
-  return { entryId: simulatedId, txHash: hash }
+  const confirmationsStr = receipt.confirmations !== undefined ? String(receipt.confirmations) : '?'
+  console.log(
+    `${stamp()} RECEIPT FINAL HASH=${hash} status=${receipt.status} block=${receipt.blockNumber?.toString() ?? '?'} logs=${receipt.logs?.length ?? 0} gasUsed=${receipt.gasUsed?.toString() ?? '?'} confirmations=${confirmationsStr}`,
+  )
+  if (receipt.status !== 'success') {
+    console.error(`${stamp()} transaction NOT success on-chain HASH=${hash}`)
+    return { entryId: simulatedId, txHash: hash }
+  }
+
+  const entryIdFromLog = decodeEntrySubmittedFromReceipt(receipt, registry)
+  const finalId = entryIdFromLog ?? simulatedId
+  if (!entryIdFromLog) {
+    const reg = registry.toLowerCase()
+    console.warn(
+      `${stamp()} EntrySubmitted log missing — simulatedId fallback=${simulatedId} registryMatchedLogs=${receipt.logs.filter(l => l.address.toLowerCase() === reg).length}`,
+    )
+  }
+  console.log(`${stamp()} SUCCESS canonicalEntryId=${finalId} HASH=${hash} totalElapsed=${Date.now() - t0}ms`)
+  return { entryId: finalId, txHash: hash }
 }
 
 /**
@@ -276,10 +394,17 @@ export async function getEntryFromChain(entryId: `0x${string}`): Promise<{
   const registry = ADDR.registry
   if (!c || !registry) return null
   try {
-    return await c.pub.readContract({
-      address: registry, abi: REGISTRY_ABI, functionName: 'getEntry', args: [entryId],
-    }) as any
-  } catch {
+    return await withRetry(
+      () => c.pub.readContract({
+        address: registry, abi: REGISTRY_ABI, functionName: 'getEntry', args: [entryId],
+      }) as Promise<{
+        storageRef: string; embeddingRef: string; tags: string[]; domain: number
+        submitter: `0x${string}`; stakeAmount: bigint; status: number; inftTokenId: bigint
+      }>,
+      { maxAttempts: 4, baseDelayMs: 300, label: '[getEntryFromChain]' },
+    )
+  } catch (err) {
+    console.warn('[getEntryFromChain]', entryId.slice(0, 18) + '…', (err as Error).message?.slice(0, 100))
     return null
   }
 }
@@ -292,12 +417,15 @@ export async function getInftTokenId(entryId: `0x${string}`): Promise<bigint> {
   const registry = ADDR.registry
   if (!c || !registry) return 0n
 
-  const entry = await c.pub.readContract({
-    address: registry,
-    abi: REGISTRY_ABI,
-    functionName: 'getEntry',
-    args: [entryId],
-  }) as { inftTokenId: bigint }
+  const entry = await withRetry(
+    () => c.pub.readContract({
+      address: registry,
+      abi: REGISTRY_ABI,
+      functionName: 'getEntry',
+      args: [entryId],
+    }) as Promise<{ inftTokenId: bigint }>,
+    { maxAttempts: 4, baseDelayMs: 300, label: '[getInftTokenId]' },
+  )
 
   return entry.inftTokenId
 }
