@@ -128,18 +128,26 @@ echo ""
 echo "${BOLD}STEP 3 — Send payment on-chain${RESET}"
 echo "  ${DIM}Sending $PAY_ETH A0GI → $PAY_TO${RESET}"
 
+set +e
 TX_OUT=$(cast send \
   --rpc-url "$RPC" \
   --private-key "$AGENT_KEY" \
   --value "$PAY_WEI" \
   --async \
   "$PAY_TO" 2>&1)
+CAST_EXIT=$?
+set -e
 
-# --async prints just the tx hash
+if [ "$CAST_EXIT" -ne 0 ]; then
+  echo "  ${RED}✗ cast send failed (exit $CAST_EXIT):${RESET}"
+  echo "$TX_OUT"
+  exit 1
+fi
+
 TX_HASH=$(echo "$TX_OUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1)
 
 if [ -z "$TX_HASH" ]; then
-  echo "  ${RED}✗ cast send failed:${RESET}"
+  echo "  ${RED}✗ could not extract tx hash:${RESET}"
   echo "$TX_OUT"
   exit 1
 fi
