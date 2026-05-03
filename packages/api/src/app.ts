@@ -14,7 +14,7 @@ import {
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
 import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
-import { upsertEntry, getDbEntry, getAllDbEntries, addDiscussion, getDiscussions } from './db.js'
+import { upsertEntry, getDbEntry, getAllDbEntries, deleteEntry, addDiscussion, getDiscussions } from './db.js'
 import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
@@ -185,13 +185,14 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         cache.set(onchainEntryId, cacheEntry)
       }
 
-      // Always use the local random ID as DB primary key — the on-chain "entryId"
-      // returned by the contract is the ABI-encoded submitter address (not unique per entry)
-      upsertEntry(entryId, {
+      // Use on-chain ID when available (simulateContract now returns the real unique bytes32).
+      // Fall back to local random ID if chain submission failed.
+      const dbEntryId = onchainEntryId ?? entryId
+      upsertEntry(dbEntryId, {
         storageRef, tags, domain, submitter: submittedBy,
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
       })
-      console.log(`[store] saved entryId=${entryId} onchain=${!!onchainEntryId}`)
+      console.log(`[store] saved entryId=${dbEntryId} onchain=${!!onchainEntryId}`)
 
       let manifestRef: string | undefined
       const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
@@ -212,7 +213,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         )
       }
 
-      const result: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef }
+      const result: StoreResponse = { entryId: dbEntryId, storageRef, embeddingRef, manifestRef }
       jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
     })().catch((err) => {
       console.error('[store] job failed:', err?.message ?? err)
@@ -471,6 +472,26 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   // ─── GET /entries ─────────────────────────────────────────────────────────
   app.get('/entries', (_req, res) => {
     res.json(getAllDbEntries())
+  })
+
+  // ─── DELETE /entries/:entryId ─────────────────────────────────────────────
+  app.delete('/entries/:entryId', (req, res) => {
+    if (req.headers['x-admin-token'] !== (process.env.ADMIN_TOKEN ?? 'mnemosyne-admin')) {
+      res.status(403).json({ error: 'forbidden' }); return
+    }
+    const info = deleteEntry(req.params.entryId)
+    cache.delete(req.params.entryId)
+    res.json({ deleted: info.changes > 0, entryId: req.params.entryId })
+  })
+
+  // ─── POST /admin/reset ────────────────────────────────────────────────────
+  app.post('/admin/reset', (req, res) => {
+    if (req.headers['x-admin-token'] !== (process.env.ADMIN_TOKEN ?? 'mnemosyne-admin')) {
+      res.status(403).json({ error: 'forbidden' }); return
+    }
+    const all = getAllDbEntries()
+    for (const e of all) { deleteEntry(e.entryId); cache.delete(e.entryId) }
+    res.json({ cleared: all.length })
   })
 
   // ─── GET /discussions/:entryId ────────────────────────────────────────────

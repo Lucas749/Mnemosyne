@@ -119,6 +119,10 @@ export function getAllDbEntries() {
   return rows.map(parseEntry)
 }
 
+export function deleteEntry(entryId: string) {
+  return db.prepare('DELETE FROM entries WHERE entry_id = ?').run(entryId)
+}
+
 export function addDiscussion(entryId: string, author: string, content: string) {
   return db.prepare(
     'INSERT INTO discussions (entry_id, author, content, created_at) VALUES (?, ?, ?, ?)'

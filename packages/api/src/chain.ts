@@ -211,19 +211,35 @@ export async function submitOnChain(
   const c = clients()
   if (!c) return null
   const registry = ADDR.registry
+  const args = [storageRef, embeddingRef, tags, DOMAIN_INDEX[domain] ?? 0] as const
+
+  // Simulate first to capture the bytes32 return value before broadcasting.
+  // writeContract doesn't expose return values; simulateContract does.
+  let simulatedId: `0x${string}` | null = null
+  try {
+    const { result } = await c.pub.simulateContract({
+      address: registry,
+      abi: REGISTRY_ABI,
+      functionName: 'submit',
+      args,
+      value: MIN_STAKE,
+      account: c.account,
+    })
+    simulatedId = result as `0x${string}`
+  } catch (simErr) {
+    console.warn('[submitOnChain] simulate failed:', (simErr as Error).message?.slice(0, 80))
+  }
 
   const hash = await c.wallet.writeContract({
     address: registry,
     abi: REGISTRY_ABI,
     functionName: 'submit',
-    args: [storageRef, embeddingRef, tags, DOMAIN_INDEX[domain] ?? 0],
+    args,
     value: MIN_STAKE,
   })
-
-  const receipt = await c.pub.waitForTransactionReceipt({ hash })
-  // entryId is the return value — encoded in the first log topic of EntrySubmitted event
-  const log = receipt.logs[0]
-  return (log?.topics[1] ?? null) as `0x${string}` | null
+  await c.pub.waitForTransactionReceipt({ hash })
+  console.log(`[submitOnChain] tx=${hash} entryId=${simulatedId}`)
+  return simulatedId
 }
 
 /**
