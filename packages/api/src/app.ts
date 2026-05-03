@@ -145,9 +145,11 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
       // Compute embeddings if available; fall back gracefully when 0G compute is down
       let embeddingRef = ''
+      let embVector: number[] = []
       if (compute) {
         try {
           const embBlob = await Promise.race([generateEmbedding(compute, entryId, body.content), timeout])
+          embVector = embBlob.vector
           embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
         } catch (embErr) {
           console.warn('[store] embedding skipped:', (embErr as Error).message?.slice(0, 80))
@@ -163,22 +165,25 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
         : undefined
 
-      // Compute similarity edges against all existing entries
+      // Compute similarity edges against all existing entries (only when embeddings available)
       const EDGE_THRESHOLD = 0.6
       const edges: Record<string, number> = {}
-      for (const [existingId, existing] of cache.entries()) {
-        const sim = cosineSimilarity(embBlob.vector, existing.vector)
-        if (sim >= EDGE_THRESHOLD) {
-          edges[existingId] = Math.round(sim * 1000) / 1000
-          // Add back-edge on existing entry
-          const ex = cache.get(existingId)!
-          cache.set(existingId, { ...ex, edges: { ...ex.edges, [entryId]: edges[existingId] } })
+      if (embVector.length > 0) {
+        for (const [existingId, existing] of cache.entries()) {
+          if (!existing.vector?.length) continue
+          const sim = cosineSimilarity(embVector, existing.vector)
+          if (sim >= EDGE_THRESHOLD) {
+            edges[existingId] = Math.round(sim * 1000) / 1000
+            // Add back-edge on existing entry
+            const ex = cache.get(existingId)!
+            cache.set(existingId, { ...ex, edges: { ...ex.edges, [entryId]: edges[existingId] } })
+          }
         }
       }
 
       const cacheEntry = {
         content: body.content,
-        vector: embBlob.vector,
+        vector: embVector,
         storageRef,
         tags,
         domain,
