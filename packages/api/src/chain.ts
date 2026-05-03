@@ -310,6 +310,7 @@ export async function submitOnChain(
       functionName: 'submit',
       args,
       value: MIN_STAKE,
+      gas: 800_000n,
     }),
     { maxAttempts: 4, baseDelayMs: 500, label: '[submitOnChain] writeContract' },
   )

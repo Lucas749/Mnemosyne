@@ -266,59 +266,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         slog(`STEP 2 embedding SKIPPED ${(embErr as Error).message?.slice?.(0, 120)}`)
       }
 
-      slog('STEP 3 Galileo MnemosyneRegistry.submit (see [submitOnChain …] logs for receipt timing)')
-
-      const zgConfigured = !!(process.env.ZG_PRIVATE_KEY && String(process.env.ZG_PRIVATE_KEY).trim())
-      const submitAttempts = zgConfigured ? 5 : 1
-      let onchainSubmission: Awaited<ReturnType<typeof submitOnChain>> = { entryId: null, txHash: null }
-
-      for (let a = 1; a <= submitAttempts; a++) {
-        try {
-          onchainSubmission = await submitOnChain(storageRef, embeddingRef, tags, domain)
-        } catch (err) {
-          slog(`submit attempt ${a}/${submitAttempts} THREW`, (err as Error)?.message ?? err)
-          if (!zgConfigured || a === submitAttempts) {
-            onchainSubmission = { entryId: null, txHash: null }
-            break
-          }
-          const waitMs = 700 * 2 ** (a - 1)
-          await new Promise(r => setTimeout(r, waitMs))
-          continue
-        }
-        const ok = !!(onchainSubmission.txHash ?? onchainSubmission.entryId)
-        if (ok || !zgConfigured || a === submitAttempts) break
-        console.warn(`[store:${jobId}] submit attempt ${a}/${submitAttempts}: no tx/id yet → retry backoff`)
-        await new Promise(r => setTimeout(r, 700 * 2 ** (a - 1)))
-      }
-      const onchainEntryId = onchainSubmission.entryId
-      const trackedTxHash = onchainSubmission.txHash
-
-      const dbPublicId = onchainEntryId ?? encryptionKeyId
-
-      if (onchainEntryId && encryptionKeyId !== onchainEntryId && trackedTxHash) {
-        const mv = migrateEntryPrimaryKey(encryptionKeyId, onchainEntryId, trackedTxHash)
-        if (!mv.ok) {
-          slog(`SQLite migrate FAILED ${encryptionKeyId}→${onchainEntryId}: ${mv.reason}`)
-        } else {
-          slog(`SQLite migrate OK uploadKey→canonical bytes32`)
-        }
-        cache.delete(encryptionKeyId)
-      }
-
-      if (!(onchainSubmission.txHash || onchainEntryId)) {
-        slog(
-          `WARN STEP 4 no Galileo submit visible — offline dbPublicId=${dbPublicId}; check ZG_PRIVATE_KEY MNEMOSYNE_REGISTRY_ADDRESS operator balance MIN_STAKE`,
-        )
-      } else {
-        slog(
-          `STEP 4 OK dbPublicId=${dbPublicId} onchainBytes32=${onchainEntryId ?? 'null'} submitTx=${onchainSubmission.txHash ?? 'null'} rowMigratedFromUpload=${!!onchainEntryId && encryptionKeyId !== dbPublicId}`,
-        )
-      }
-
-      const challengeWindowEnd = onchainEntryId
-        ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
-        : undefined
-
+      // ── STEP 3: cache + DB — entry is now searchable ─────────────────────
+      // Build edges against existing vectors before inserting into cache.
       const EDGE_THRESHOLD = 0.6
       const edges: Record<string, number> = {}
       if (embVector.length > 0) {
@@ -328,12 +277,12 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
           if (sim >= EDGE_THRESHOLD) {
             edges[existingId] = Math.round(sim * 1000) / 1000
             const ex = cache.get(existingId)!
-            cache.set(existingId, { ...ex, edges: { ...ex.edges, [dbPublicId]: edges[existingId] } })
+            cache.set(existingId, { ...ex, edges: { ...ex.edges, [encryptionKeyId]: edges[existingId] } })
           }
         }
       }
 
-      const cacheEntry: CachedEntry = {
+      cache.set(encryptionKeyId, {
         content: body.content,
         vector: embVector,
         storageRef,
@@ -341,35 +290,84 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         domain,
         submittedBy,
         encryptionEntryId: encryptionKeyId,
-        onchainEntryId: onchainEntryId ?? undefined,
-        submitTxHash: onchainSubmission.txHash ?? undefined,
-        challengeWindowEnd,
         edges,
         queriedByAgents: [],
-      }
-      cache.set(dbPublicId, cacheEntry)
+      })
 
-      upsertEntry(dbPublicId, {
+      upsertEntry(encryptionKeyId, {
         storageRef, tags, domain, submitter: submittedBy, submitterWallet: attributionWallet ?? null,
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
-        submitTxHash: onchainSubmission.txHash ?? null,
         encryptionEntryId: encryptionKeyId,
         embeddingRef: embeddingRef || null,
         embeddingVector: embVector.length > 0 ? embVector : null,
       })
-      slog(`STEP 5 sqlite+cache upsert entryId=${dbPublicId}`)
+      slog(`STEP 3 cache+sqlite ready entryId(temp)=${encryptionKeyId}`)
 
-      // Auto-mint iNFT after challenge window (fire-and-forget)
-      if (onchainEntryId) {
-        scheduleActivation(onchainEntryId, encryptionKeyId)
-        slog(`STEP 5b autoActivate scheduled in ${(CHALLENGE_WINDOW_MS + ACTIVATE_BUFFER_MS) / 1000}s`)
+      // ── Mark job done — content is uploaded and searchable ────────────────
+      // Chain submit + ENS continue in the background; they will migrate the
+      // entryId from encryptionKeyId to the on-chain bytes32 when confirmed.
+      const result: StoreResponse = {
+        entryId: encryptionKeyId,
+        storageRef,
+        embeddingRef,
+      }
+      jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
+      slog(`DONE (storage+search ready) — chain submit continuing in background`)
+
+      // ── STEP 4: chain submit (background, fire-and-forget from job POV) ───
+      slog('BG STEP 4 Galileo MnemosyneRegistry.submit starting…')
+      const zgConfigured = !!(process.env.ZG_PRIVATE_KEY && String(process.env.ZG_PRIVATE_KEY).trim())
+      let onchainSubmission: Awaited<ReturnType<typeof submitOnChain>> = { entryId: null, txHash: null }
+
+      if (zgConfigured) {
+        const submitAttempts = 5
+        for (let a = 1; a <= submitAttempts; a++) {
+          try {
+            onchainSubmission = await submitOnChain(storageRef, embeddingRef, tags, domain)
+          } catch (err) {
+            slog(`BG submit attempt ${a}/${submitAttempts} THREW`, (err as Error)?.message ?? err)
+            if (a === submitAttempts) break
+            await new Promise(r => setTimeout(r, 700 * 2 ** (a - 1)))
+            continue
+          }
+          if (onchainSubmission.txHash ?? onchainSubmission.entryId) break
+          await new Promise(r => setTimeout(r, 700 * 2 ** (a - 1)))
+        }
       }
 
+      const onchainEntryId = onchainSubmission.entryId
+      const trackedTxHash  = onchainSubmission.txHash
+
+      if (onchainEntryId && encryptionKeyId !== onchainEntryId && trackedTxHash) {
+        const mv = migrateEntryPrimaryKey(encryptionKeyId, onchainEntryId, trackedTxHash)
+        if (!mv.ok) {
+          slog(`BG SQLite migrate FAILED ${encryptionKeyId}→${onchainEntryId}: ${mv.reason}`)
+        } else {
+          // Update cache key to canonical on-chain bytes32
+          const existing = cache.get(encryptionKeyId)
+          if (existing) {
+            cache.set(onchainEntryId, {
+              ...existing,
+              onchainEntryId,
+              submitTxHash: trackedTxHash,
+              challengeWindowEnd: Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000),
+            })
+            cache.delete(encryptionKeyId)
+          }
+          slog(`BG SQLite+cache migrated uploadKey→${onchainEntryId}`)
+        }
+        scheduleActivation(onchainEntryId, encryptionKeyId)
+        slog(`BG autoActivate scheduled in ${(CHALLENGE_WINDOW_MS + ACTIVATE_BUFFER_MS) / 1000}s`)
+      } else if (!onchainEntryId) {
+        slog('BG WARN no Galileo submit — entry lives as upload-key only; check ZG_PRIVATE_KEY / operator balance')
+      }
+
+      // ── STEP 5: ENS manifest + subdomain (background) ─────────────────────
+      const dbPublicId = onchainEntryId ?? encryptionKeyId
       let manifestRef: string | undefined
       let entryEnsName: string | undefined
       const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
-      const collectiveManifest =
-        process.env.ENS_MEMORY_INDEX_DOMAIN?.trim() || 'mnemosyne.eth'
+      const collectiveManifest = process.env.ENS_MEMORY_INDEX_DOMAIN?.trim() || 'mnemosyne.eth'
 
       const manifestOwners: string[] = []
       if (submittedBy.endsWith('.eth')) manifestOwners.push(submittedBy)
@@ -378,7 +376,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       }
 
       if (manifestOwners.length > 0 && ensKey) {
-        slog(`STEP 6 ENS manifest owners=[${manifestOwners.join(',')}] collective=${collectiveManifest}`)
+        slog(`BG STEP 5 ENS manifest owners=[${manifestOwners.join(',')}]`)
         const manifestEntryPayload: ManifestEntry = {
           entryId: dbPublicId,
           ...(encryptionKeyId !== dbPublicId ? { storageDecryptId: encryptionKeyId } : {}),
@@ -391,74 +389,45 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         }
 
         for (const ownerEns of manifestOwners) {
-          slog(`STEP 6a owner=${ownerEns} getMemoryIndex…`)
-          const currentRef = await withRetryBroad(() => getMemoryIndex(ownerEns), {
-            maxAttempts: 4,
-            baseDelayMs: 400,
-            label: `[store] getMemoryIndex(${ownerEns})`,
-          }).catch(() => null)
-          const nextManifestRef = await withRetryBroad(
-            () => addEntryToManifest(storage, currentRef, ownerEns, manifestEntryPayload),
-            { maxAttempts: 5, baseDelayMs: 500, label: `[store] addEntryToManifest(${ownerEns})` },
-          )
-          slog(`STEP 6b owner=${ownerEns} manifestRef(uploaded manifest)=${nextManifestRef}`)
           try {
+            const currentRef = await withRetryBroad(() => getMemoryIndex(ownerEns), {
+              maxAttempts: 4, baseDelayMs: 400, label: `[store] getMemoryIndex(${ownerEns})`,
+            }).catch(() => null)
+            const nextManifestRef = await withRetryBroad(
+              () => addEntryToManifest(storage, currentRef, ownerEns, manifestEntryPayload),
+              { maxAttempts: 5, baseDelayMs: 500, label: `[store] addEntryToManifest(${ownerEns})` },
+            )
             await withRetryBroad(
               () => setMemoryIndex(ensKey, ownerEns, nextManifestRef),
-              {
-                maxAttempts: 6,
-                baseDelayMs: 600,
-                label: `[store] setMemoryIndex(${ownerEns})`,
-              },
+              { maxAttempts: 6, baseDelayMs: 600, label: `[store] setMemoryIndex(${ownerEns})` },
             )
             manifestRef = nextManifestRef
-            slog(`STEP 6c owner=${ownerEns} setMemoryIndex txHash(await identity pkg logs)`)
+            slog(`BG STEP 5 ENS manifest ok owner=${ownerEns}`)
           } catch (err) {
-            slog(`setMemoryIndex FAILED owner=${ownerEns}`, (err as Error)?.message ?? err)
+            slog(`BG STEP 5 ENS manifest FAILED owner=${ownerEns}`, (err as Error)?.message ?? err)
           }
         }
-      } else {
-        slog(`STEP 6 ENS manifest SKIP (owners=${manifestOwners.length} ensKey=${!!ensKey})`)
       }
 
-      // Per-entry Sepolia subdomain (`*.mnemo.mnemosyne.eth`) — keyed by canonical `dbPublicId`
-      // even when Galileo receipt/simulate did not yield `onchainEntryId` yet.
       if (ensKey) {
         const targetAddress = privateKeyToAccount(ensKey).address
         if (targetAddress) {
           try {
-            slog(`STEP 7 ENS entry subdomain register entryId=${dbPublicId} targetAddr=${targetAddress}`)
             const ensResult = await withRetryBroad(
-              () =>
-                registerEntryEnsName({
-                  privateKey: ensKey,
-                  entryId: dbPublicId,
-                  targetAddress,
-                  parentName: 'mnemosyne.eth',
-                  trace: `[store:${jobId}]`,
-                }),
+              () => registerEntryEnsName({
+                privateKey: ensKey, entryId: dbPublicId, targetAddress,
+                parentName: 'mnemosyne.eth', trace: `[store:${jobId}]`,
+              }),
               { maxAttempts: 4, baseDelayMs: 1_400, label: `[store] registerEntryEnsName` },
             )
             entryEnsName = ensResult.fullName
-            slog(`STEP 7 DONE entryEnsName=${entryEnsName}`)
+            slog(`BG STEP 5 ENS subdomain ok entryEnsName=${entryEnsName}`)
           } catch (ensErr) {
-            slog(`STEP 7 registerEntryEnsName FAILED`, (ensErr as Error)?.message ?? ensErr)
+            slog(`BG STEP 5 ENS subdomain FAILED`, (ensErr as Error)?.message ?? ensErr)
           }
         }
-      } else {
-        slog('STEP 7 ENS subdomain SKIP ENS_PRIVATE_KEY unset')
       }
-
-      const result: StoreResponse = {
-        entryId: dbPublicId,
-        storageRef,
-        embeddingRef,
-        manifestRef,
-        submitTxHash: onchainSubmission.txHash ?? undefined,
-        entryEnsName,
-      }
-      jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
-      slog(`DONE json=${JSON.stringify({ entryId: result.entryId, storageRef: result.storageRef, manifestRef: result.manifestRef ?? '', submitTxHash: result.submitTxHash ?? '', entryEnsName: result.entryEnsName ?? '' })}`)
+      slog(`BG ALL DONE dbPublicId=${dbPublicId} manifestRef=${manifestRef ?? 'none'} ensName=${entryEnsName ?? 'none'}`)
     })().catch((err) => {
       const msg =
         (err as { shortMessage?: string })?.shortMessage
