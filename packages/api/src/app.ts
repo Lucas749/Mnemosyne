@@ -116,6 +116,33 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     }
   }, 60_000).unref()
 
+  const CHALLENGE_WINDOW_MS = 5 * 60 * 1000 // 5 min testnet challenge window
+  const ACTIVATE_BUFFER_MS  = 30_000         // 30s buffer after window closes
+
+  // Fire-and-forget: mint the iNFT automatically after challenge window elapses.
+  function scheduleActivation(onchainEntryId: `0x${string}`, localCacheKey: string) {
+    const delay = CHALLENGE_WINDOW_MS + ACTIVATE_BUFFER_MS
+    setTimeout(async () => {
+      console.log(`[autoActivate] challenge window elapsed, activating entryId=${onchainEntryId}`)
+      try {
+        const tokenId = await activateEntryOnChain(onchainEntryId)
+        if (tokenId && tokenId > 0n) {
+          upsertEntry(onchainEntryId, { status: 1, inftTokenId: tokenId.toString() })
+          const cached = cache.get(localCacheKey) ?? cache.get(onchainEntryId)
+          if (cached) {
+            cache.set(onchainEntryId, { ...cached, inftTokenId: tokenId })
+            if (localCacheKey !== onchainEntryId) cache.set(localCacheKey, { ...cached, inftTokenId: tokenId })
+          }
+          console.log(`[autoActivate] iNFT minted tokenId=${tokenId} for entryId=${onchainEntryId}`)
+        } else {
+          console.warn(`[autoActivate] activateEntryOnChain returned null/0 for entryId=${onchainEntryId}`)
+        }
+      } catch (err) {
+        console.error(`[autoActivate] failed for entryId=${onchainEntryId}:`, (err as Error)?.message ?? err)
+      }
+    }, delay).unref()
+  }
+
   app.get('/health', (_req, res) => {
     res.json({ status: 'ok', entries: cache.size })
   })
@@ -268,7 +295,6 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         )
       }
 
-      const CHALLENGE_WINDOW_MS = 5 * 60 * 1000 // matches contract (5 min testnet)
       const challengeWindowEnd = onchainEntryId
         ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
         : undefined
@@ -310,6 +336,12 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         encryptionEntryId: encryptionKeyId,
       })
       slog(`STEP 5 sqlite+cache upsert entryId=${dbPublicId}`)
+
+      // Auto-mint iNFT after challenge window (fire-and-forget)
+      if (onchainEntryId) {
+        scheduleActivation(onchainEntryId, encryptionKeyId)
+        slog(`STEP 5b autoActivate scheduled in ${(CHALLENGE_WINDOW_MS + ACTIVATE_BUFFER_MS) / 1000}s`)
+      }
 
       let manifestRef: string | undefined
       let entryEnsName: string | undefined
@@ -536,9 +568,12 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       content, vector: [], storageRef, tags, domain, submittedBy,
       onchainEntryId: dbPublicId, submitTxHash: txHash,
       encryptionEntryId: encryptionKeyId ?? dbPublicId,
-      challengeWindowEnd: Math.floor((Date.now() + 5 * 60 * 1000) / 1000),
+      challengeWindowEnd: Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000),
       edges: {}, queriedByAgents: [],
     })
+
+    // Auto-mint iNFT after challenge window
+    scheduleActivation(dbPublicId, dbPublicId)
 
     // Update ENS manifest async (non-blocking for response)
     const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
