@@ -141,9 +141,18 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         checksum: '',
       }
 
-      const storageRef   = await Promise.race([uploadEntryBlob(storage, blob), timeout])
-      const embBlob      = await Promise.race([generateEmbedding(compute, entryId, body.content), timeout])
-      const embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
+      const storageRef = await Promise.race([uploadEntryBlob(storage, blob), timeout])
+
+      // Compute embeddings if available; fall back gracefully when 0G compute is down
+      let embeddingRef = ''
+      if (compute) {
+        try {
+          const embBlob = await Promise.race([generateEmbedding(compute, entryId, body.content), timeout])
+          embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
+        } catch (embErr) {
+          console.warn('[store] embedding skipped:', (embErr as Error).message?.slice(0, 80))
+        }
+      }
 
       const onchainEntryId = await submitOnChain(storageRef, embeddingRef, tags, domain).catch((err) => {
         console.error('[store] submitOnChain failed:', (err as Error).message ?? err)
