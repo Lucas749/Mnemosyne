@@ -14,7 +14,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice, getEntryIdFromTxHash, verifyPaymentTx, REGISTRY_ADDRESS, REGISTRY_SUBMIT_STAKE_WEI } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, recordQueryOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice, getEntryIdFromTxHash, verifyPaymentTx, REGISTRY_ADDRESS, REGISTRY_SUBMIT_STAKE_WEI } from './chain.js'
 import { registerEntryEnsName } from './ens.js'
 import {
   upsertEntry, getDbEntry, migrateEntryPrimaryKey, getAllDbEntries, deleteEntry,
@@ -781,12 +781,15 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       console.log(`[unlock] payment verified txHash=${paymentTx} payTo=${payTo} minWei=${royaltyWei}`)
     }
 
-    // ── Royalty accounting (fire-and-forget — does not gate the response) ────
+    // ── Royalty accounting + query counter (fire-and-forget) ─────────────────
     if (recipient) {
       depositQueryFeeOnChain([recipient], royaltyWei).catch(err =>
         console.error('[unlock] depositQueryFee failed:', (err as Error).message)
       )
     }
+    recordQueryOnChain(entryId as `0x${string}`, royaltyWei).catch(err =>
+      console.error('[unlock] recordQuery failed:', (err as Error).message)
+    )
 
     const executorAddress = (queriedBy?.startsWith('0x') ? queriedBy as `0x${string}` : null) ?? getOperatorAddress()
     if (executorAddress && cached.inftTokenId) {

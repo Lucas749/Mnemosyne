@@ -616,6 +616,25 @@ export async function depositQueryFeeOnChain(
   })
 }
 
+/**
+ * Call MnemosyneRegistry.recordQuery() — increments queryCount and royaltiesEarned on-chain.
+ * Fire-and-forget: call without awaiting from the unlock handler.
+ */
+export async function recordQueryOnChain(
+  entryId: `0x${string}`,
+  royaltyWei: bigint,
+): Promise<`0x${string}` | null> {
+  const c = clients()
+  if (!c) return null
+
+  return c.wallet.writeContract({
+    address: REGISTRY_ADDRESS,
+    abi: REGISTRY_ABI,
+    functionName: 'recordQuery',
+    args: [entryId, royaltyWei],
+  })
+}
+
 export interface MarketListing {
   tokenId: bigint
   seller: `0x${string}`
