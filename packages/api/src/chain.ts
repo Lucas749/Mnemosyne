@@ -447,6 +447,37 @@ export async function getEntryIdFromTxHash(txHash: `0x${string}`): Promise<`0x${
   return decodeEntrySubmittedFromReceipt(receipt, ADDR.registry)
 }
 
+/**
+ * Verify that a payment tx hash represents a successful ETH transfer
+ * to the expected recipient of at least minWei.
+ * Returns null on success, or an error string on failure.
+ */
+export async function verifyPaymentTx(
+  txHash: string,
+  expectedRecipient: `0x${string}`,
+  minWei: bigint,
+): Promise<null | string> {
+  const c = clients()
+  if (!c) return null // no RPC configured — allow through
+  const hash = txHash as `0x${string}`
+  try {
+    const [receipt, tx] = await Promise.all([
+      c.pub.getTransactionReceipt({ hash }),
+      c.pub.getTransaction({ hash }),
+    ])
+    if (!receipt || receipt.status !== 'success') return 'payment tx not found or failed'
+    if (tx.to?.toLowerCase() !== expectedRecipient.toLowerCase()) {
+      return `payment sent to ${tx.to} — expected ${expectedRecipient}`
+    }
+    if (tx.value < minWei) {
+      return `payment value ${tx.value} wei < required ${minWei} wei`
+    }
+    return null
+  } catch (err) {
+    return `could not verify tx: ${(err as Error).message?.slice(0, 100)}`
+  }
+}
+
 /** The minimum stake required by MnemosyneRegistry.submit() */
 export const REGISTRY_ADDRESS = ADDR.registry
 

@@ -14,7 +14,7 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice, getEntryIdFromTxHash, REGISTRY_ADDRESS, REGISTRY_SUBMIT_STAKE_WEI } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice, getEntryIdFromTxHash, verifyPaymentTx, REGISTRY_ADDRESS, REGISTRY_SUBMIT_STAKE_WEI } from './chain.js'
 import { registerEntryEnsName } from './ens.js'
 import {
   upsertEntry, getDbEntry, migrateEntryPrimaryKey, getAllDbEntries, deleteEntry,
@@ -747,41 +747,44 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
     // ── x402: if ENFORCE_PAYMENT and no payment proof supplied, return 402 ──
     const paymentTx = req.headers['x-payment'] as string | undefined
+    const payTo = recipient ?? getOperatorAddress()
     if (enforcePayment && !paymentTx) {
       res.status(402).json({
         error: 'Payment required',
         x402: {
           version: '1',
           scheme: 'exact',
-          network: 'sepolia',
+          network: '0g-galileo',
           maxAmountRequired: royaltyWei.toString(),
           resource: `${process.env.MNEMOSYNE_API_URL ?? ''}/unlock`,
           description: `Unlock knowledge entry ${entryId}`,
           mimeType: 'application/json',
-          payTo: recipient ?? getOperatorAddress(),
+          payTo,
           maxTimeoutSeconds: 300,
-          asset: '0x0000000000000000000000000000000000000000', // native ETH
+          asset: '0x0000000000000000000000000000000000000000',
           extra: { entryId, submittedBy: cached.submittedBy },
         },
       })
       return
     }
 
-    // ── Payment settlement ───────────────────────────────────────────────────
-    // If a tx hash is provided (x402 retry), verify it exists on-chain (basic check).
-    // Then deposit the royalty accounting entry on 0G regardless.
+    // ── Payment verification (when ENFORCE_PAYMENT=true and X-Payment supplied) ──
     let paymentOk = !enforcePayment
-    if (recipient) {
-      try {
-        await depositQueryFeeOnChain([recipient], royaltyWei)
-        paymentOk = true
-      } catch (err) {
-        if (enforcePayment) {
-          res.status(402).json({ error: 'payment settlement failed', detail: (err as Error).message })
-          return
-        }
-        console.error('[unlock] royalty deposit failed (ENFORCE_PAYMENT=false):', (err as Error).message)
+    if (enforcePayment && paymentTx && payTo) {
+      const err = await verifyPaymentTx(paymentTx, payTo, royaltyWei)
+      if (err) {
+        res.status(402).json({ error: 'payment verification failed', detail: err })
+        return
       }
+      paymentOk = true
+      console.log(`[unlock] payment verified txHash=${paymentTx} payTo=${payTo} minWei=${royaltyWei}`)
+    }
+
+    // ── Royalty accounting (fire-and-forget — does not gate the response) ────
+    if (recipient) {
+      depositQueryFeeOnChain([recipient], royaltyWei).catch(err =>
+        console.error('[unlock] depositQueryFee failed:', (err as Error).message)
+      )
     }
 
     const executorAddress = (queriedBy?.startsWith('0x') ? queriedBy as `0x${string}` : null) ?? getOperatorAddress()
