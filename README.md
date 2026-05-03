@@ -271,11 +271,12 @@ AGENT_PRIVATE_KEY=0x... ./scripts/test-pay.sh
 
 ## Deployed ENS names (Sepolia)
 
-| Name | Purpose |
-|---|---|
-| `mnemosyne.eth` | Protocol root — collective memory index |
-| `agent.mnemosyne.eth` | Demo agent subname |
-| `demo.mnemosyne.eth` | Demo agent subname |
+| Name | Purpose | ENS App |
+|---|---|---|
+| `mnemosyne.eth` | Protocol root — collective memory index | [view](https://sepolia.app.ens.domains/mnemosyne.eth) |
+| `agent.mnemosyne.eth` | Demo agent subname | [view](https://sepolia.app.ens.domains/agent.mnemosyne.eth) |
+| `demo.mnemosyne.eth` | Demo agent subname | [view](https://sepolia.app.ens.domains/demo.mnemosyne.eth) |
+| `war.clay.lot.mnemo.mnemosyne.eth` | Live entry subname (on-chain knowledge entry) | [view](https://sepolia.app.ens.domains/war.clay.lot.mnemo.mnemosyne.eth) |
 
 ---
 
