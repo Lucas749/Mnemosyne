@@ -17,7 +17,6 @@ const sections = [
     items: [
       { label: 'Challenge Arena', href: '/challenge' },
       { label: 'iNFT Marketplace', href: '/marketplace' },
-      { label: 'Leaderboard', href: '/leaderboard' },
       { label: 'Agent Skill', href: '/skill' },
     ],
   },

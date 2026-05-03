@@ -395,6 +395,7 @@ export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigi
     abi: REGISTRY_ABI,
     functionName: 'activateEntry',
     args: [entryId],
+    gas: 600_000n,
   })
   console.log(`[activateEntryOnChain] tx broadcast HASH=${hash} entryId=${entryId}`)
 

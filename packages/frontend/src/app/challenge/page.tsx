@@ -200,10 +200,28 @@ export default function ChallengePage() {
                 </div>
 
                 <div style={{ display: 'flex', gap: 12 }}>
-                  <button style={{ flex: 1, background: T.successBg, border: `1px solid ${T.success}`, borderRadius: 3, padding: '11px', fontFamily: T.codeFont, fontSize: 10, color: T.success, cursor: 'pointer', letterSpacing: '0.08em' }}>
+                  <button
+                    disabled={!address}
+                    onClick={() => writeContract({
+                      address: CHALLENGE_ADDRESS,
+                      abi: CHALLENGE_ABI,
+                      functionName: 'castVote',
+                      args: [ch.id, 0],
+                      chainId: zgTestnet.id,
+                    })}
+                    style={{ flex: 1, background: T.successBg, border: `1px solid ${T.success}`, borderRadius: 3, padding: '11px', fontFamily: T.codeFont, fontSize: 10, color: address ? T.success : T.muted, cursor: address ? 'pointer' : 'not-allowed', letterSpacing: '0.08em' }}>
                     CAST VOTE: UPHOLD ↑
                   </button>
-                  <button style={{ flex: 1, background: T.dangerBg, border: `1px solid ${T.danger}`, borderRadius: 3, padding: '11px', fontFamily: T.codeFont, fontSize: 10, color: T.danger, cursor: 'pointer', letterSpacing: '0.08em' }}>
+                  <button
+                    disabled={!address}
+                    onClick={() => writeContract({
+                      address: CHALLENGE_ADDRESS,
+                      abi: CHALLENGE_ABI,
+                      functionName: 'castVote',
+                      args: [ch.id, 1],
+                      chainId: zgTestnet.id,
+                    })}
+                    style={{ flex: 1, background: T.dangerBg, border: `1px solid ${T.danger}`, borderRadius: 3, padding: '11px', fontFamily: T.codeFont, fontSize: 10, color: address ? T.danger : T.muted, cursor: address ? 'pointer' : 'not-allowed', letterSpacing: '0.08em' }}>
                     CAST VOTE: OVERTURN ↓
                   </button>
                 </div>

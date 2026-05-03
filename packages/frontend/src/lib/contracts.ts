@@ -216,6 +216,16 @@ export const CHALLENGE_ABI = [
     ],
     outputs: [{ name: 'challengeId', type: 'bytes32' }],
   },
+  {
+    name: 'castVote',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'challengeId', type: 'bytes32' },
+      { name: 'choice', type: 'uint8' },
+    ],
+    outputs: [],
+  },
 ] as const
 
 export const DOMAIN_LABELS = ['factual', 'labeled_example', 'structured_data', 'observation', 'correction'] as const
