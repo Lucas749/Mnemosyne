@@ -13,7 +13,6 @@ const NAV_LINKS = [
   { href: '/explore', label: 'EXPLORE' },
   { href: '/challenge', label: 'CHALLENGE' },
   { href: '/marketplace', label: 'MARKET' },
-  { href: '/leaderboard', label: 'LEADERBOARD' },
   { href: '/skill', label: 'AGENT SKILL' },
 ]
 

@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useRouter } from 'next/navigation'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useChainId, useSwitchChain } from 'wagmi'
 import { Tag, BtnPrimary, BtnGhost } from '@/components/design-system'
 import { T } from '@/components/design-system'
 import { prepareEntry, confirmEntry, pollJob, type PrepareResult } from '@/lib/api'
@@ -38,6 +38,8 @@ export default function SubmitPage() {
   const router = useRouter()
   const { address } = useAccount()
   const { writeContractAsync } = useWriteContract()
+  const chainId = useChainId()
+  const { switchChainAsync } = useSwitchChain()
 
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
@@ -64,8 +66,9 @@ export default function SubmitPage() {
       const jobId = await prepareEntry({ content: fullContent, domain, tags, submittedBy })
       const prepared = await pollJob<PrepareResult>(jobId)
 
-      // Phase 2: user signs the on-chain stake tx
+      // Phase 2: ensure correct network, then user signs the on-chain stake tx
       setProgress('signing')
+      if (chainId !== zgTestnet.id) await switchChainAsync({ chainId: zgTestnet.id })
       const hash = await writeContractAsync({
         address: prepared.registryAddress,
         abi: REGISTRY_ABI,

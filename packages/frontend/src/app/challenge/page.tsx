@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { useReadContracts, useWriteContract, useAccount } from 'wagmi'
+import { useReadContracts, useWriteContract, useAccount, useChainId, useSwitchChain } from 'wagmi'
 import { parseAbi, parseEther } from 'viem'
 import { createPublicClient, http } from 'viem'
 import { useQuery } from '@tanstack/react-query'
@@ -39,6 +39,8 @@ async function fetchChallengeIds(): Promise<`0x${string}`[]> {
 
 export default function ChallengePage() {
   const { address } = useAccount()
+  const chainId = useChainId()
+  const { switchChainAsync } = useSwitchChain()
   const [activeTab, setActiveTab] = useState<'open' | 'resolved' | 'mine'>('open')
   const [selected, setSelected] = useState(0)
   const [showModal, setShowModal] = useState(false)
@@ -47,6 +49,10 @@ export default function ChallengePage() {
   const [evidence, setEvidence] = useState('')
 
   const { writeContract } = useWriteContract()
+
+  async function ensureZgChain() {
+    if (chainId !== zgTestnet.id) await switchChainAsync({ chainId: zgTestnet.id })
+  }
 
   const { data: challengeIds = [] } = useQuery({
     queryKey: ['challenge-ids'],
@@ -74,8 +80,9 @@ export default function ChallengePage() {
 
   const ch = openChallenges[selected]
 
-  function handleOpenChallenge() {
+  async function handleOpenChallenge() {
     if (!entryInput || !reason) return
+    await ensureZgChain()
     writeContract({
       address: CHALLENGE_ADDRESS,
       abi: CHALLENGE_ABI,
@@ -202,25 +209,13 @@ export default function ChallengePage() {
                 <div style={{ display: 'flex', gap: 12 }}>
                   <button
                     disabled={!address}
-                    onClick={() => writeContract({
-                      address: CHALLENGE_ADDRESS,
-                      abi: CHALLENGE_ABI,
-                      functionName: 'castVote',
-                      args: [ch.id, 0],
-                      chainId: zgTestnet.id,
-                    })}
+                    onClick={async () => { await ensureZgChain(); writeContract({ address: CHALLENGE_ADDRESS, abi: CHALLENGE_ABI, functionName: 'castVote', args: [ch.id, 0], chainId: zgTestnet.id }) }}
                     style={{ flex: 1, background: T.successBg, border: `1px solid ${T.success}`, borderRadius: 3, padding: '11px', fontFamily: T.codeFont, fontSize: 10, color: address ? T.success : T.muted, cursor: address ? 'pointer' : 'not-allowed', letterSpacing: '0.08em' }}>
                     CAST VOTE: UPHOLD ↑
                   </button>
                   <button
                     disabled={!address}
-                    onClick={() => writeContract({
-                      address: CHALLENGE_ADDRESS,
-                      abi: CHALLENGE_ABI,
-                      functionName: 'castVote',
-                      args: [ch.id, 1],
-                      chainId: zgTestnet.id,
-                    })}
+                    onClick={async () => { await ensureZgChain(); writeContract({ address: CHALLENGE_ADDRESS, abi: CHALLENGE_ABI, functionName: 'castVote', args: [ch.id, 1], chainId: zgTestnet.id }) }}
                     style={{ flex: 1, background: T.dangerBg, border: `1px solid ${T.danger}`, borderRadius: 3, padding: '11px', fontFamily: T.codeFont, fontSize: 10, color: address ? T.danger : T.muted, cursor: address ? 'pointer' : 'not-allowed', letterSpacing: '0.08em' }}>
                     CAST VOTE: OVERTURN ↓
                   </button>

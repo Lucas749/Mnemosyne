@@ -1,9 +1,10 @@
 'use client'
 
 import { useState, useEffect, useRef } from 'react'
-import { useAccount, useConnect, useDisconnect, useConnectors } from 'wagmi'
+import { useAccount, useConnect, useDisconnect, useConnectors, useChainId, useSwitchChain } from 'wagmi'
 import { T } from './design-system'
 import { truncateAddress } from '@/lib/ens'
+import { zgTestnet } from '@/lib/chains'
 
 const DISPLAY_NAMES: Record<string, string> = {
   metaMask: 'MetaMask',
@@ -126,9 +127,12 @@ function WalletModal({ onClose }: { onClose: () => void }) {
 export function WalletButton() {
   const { address, isConnected, connector } = useAccount()
   const { disconnect } = useDisconnect()
+  const chainId = useChainId()
+  const { switchChain, isPending: isSwitching } = useSwitchChain()
   const [modalOpen, setModalOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
+  const wrongNetwork = isConnected && chainId !== zgTestnet.id
 
   useEffect(() => {
     if (!menuOpen) return
@@ -141,6 +145,25 @@ export function WalletButton() {
 
   if (isConnected && address) {
     const icon = (connector ? getStaticIcon(connector.id, connector.name) : undefined) ?? connector?.icon ?? undefined
+
+    if (wrongNetwork) {
+      return (
+        <button
+          onClick={() => switchChain({ chainId: zgTestnet.id })}
+          disabled={isSwitching}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            background: 'rgba(153,27,27,0.3)', border: '1px solid rgba(239,68,68,0.5)',
+            borderRadius: 3, padding: '5px 12px', fontFamily: T.codeFont,
+            fontSize: 10, letterSpacing: '0.08em', color: '#fca5a5',
+            cursor: isSwitching ? 'wait' : 'pointer',
+          }}
+        >
+          {isSwitching ? 'SWITCHING...' : '⚠ WRONG NETWORK — SWITCH TO 0G'}
+        </button>
+      )
+    }
+
     return (
       <div ref={menuRef} style={{ position: 'relative' }}>
         <button
