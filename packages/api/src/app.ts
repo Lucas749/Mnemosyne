@@ -3,6 +3,7 @@ import cors from 'cors'
 import { randomBytes } from 'crypto'
 import { generateEmbedding } from '@mnemosyne/compute'
 import {
+  createStorageClient,
   uploadEntryBlob,
   uploadEmbeddingBlob,
   downloadEntryBlob,
@@ -13,6 +14,7 @@ import {
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
 import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
+import { upsertEntry, getDbEntry, getAllDbEntries, addDiscussion, getDiscussions } from './db.js'
 import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
@@ -54,6 +56,29 @@ function cosineSimilarity(a: number[], b: number[]): number {
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB)
   return denom === 0 ? 0 : dot / denom
+}
+
+// Try both 0G indexers — turbo first (standard often returns 503)
+const INDEXER_URLS = [
+  'https://indexer-storage-testnet-turbo.0g.ai',
+  'https://indexer-storage-testnet-standard.0g.ai',
+]
+
+async function downloadWithFallback(_primaryStorage: StorageClient, storageRef: string, entryId: string): Promise<EntryBlob> {
+  const errors: string[] = []
+  for (const indexerRpc of INDEXER_URLS) {
+    try {
+      const client = createStorageClient({
+        privateKey: process.env.ZG_PRIVATE_KEY ?? '',
+        rpc: process.env.ZG_RPC_URL,
+        indexerRpc,
+      })
+      return await downloadEntryBlob(client, storageRef, entryId)
+    } catch (err) {
+      errors.push(`${indexerRpc.replace('https://', '')}: ${(err as Error).message?.slice(0, 80)}`)
+    }
+  }
+  throw new Error(`file not found on any 0G indexer. Errors: ${errors.join(' | ')}`)
 }
 
 // TODO: add Authorization: Bearer token middleware once API is publicly hosted
@@ -120,7 +145,10 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       const embBlob      = await Promise.race([generateEmbedding(compute, entryId, body.content), timeout])
       const embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
 
-      const onchainEntryId = await submitOnChain(storageRef, embeddingRef, tags, domain).catch(() => null)
+      const onchainEntryId = await submitOnChain(storageRef, embeddingRef, tags, domain).catch((err) => {
+        console.error('[store] submitOnChain failed:', (err as Error).message ?? err)
+        return null
+      })
       const CHALLENGE_WINDOW_MS = 5 * 60 * 1000 // matches contract (5 min testnet)
       const challengeWindowEnd = onchainEntryId
         ? Math.floor((Date.now() + CHALLENGE_WINDOW_MS) / 1000)
@@ -157,6 +185,14 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         cache.set(onchainEntryId, cacheEntry)
       }
 
+      // Persist full content to DB — use on-chain ID when available, local ID as fallback
+      const dbEntryId = onchainEntryId ?? entryId
+      upsertEntry(dbEntryId, {
+        storageRef, tags, domain, submitter: submittedBy,
+        content: body.content, submittedAt: Math.floor(Date.now() / 1000),
+      })
+      console.log(`[store] saved entryId=${dbEntryId} onchain=${!!onchainEntryId}`)
+
       let manifestRef: string | undefined
       const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
       if (submittedBy.endsWith('.eth') && ensKey) {
@@ -176,7 +212,8 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         )
       }
 
-      const result: StoreResponse = { entryId, storageRef, embeddingRef, manifestRef }
+      // Return the on-chain ID if registration succeeded, otherwise the local ID
+      const result: StoreResponse = { entryId: onchainEntryId ?? entryId, storageRef, embeddingRef, manifestRef }
       jobs.set(jobId, { status: 'done', result, createdAt: Date.now() })
     })().catch((err) => {
       console.error('[store] job failed:', err?.message ?? err)
@@ -266,8 +303,43 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     const { entryId, queriedBy } = req.body as { entryId: string; queriedBy?: string }
     if (!entryId) { res.status(400).json({ error: 'entryId required' }); return }
 
-    const cached = cache.get(entryId)
-    if (!cached) { res.status(404).json({ error: 'entry not found in cache' }); return }
+    // 1. In-memory cache (fastest)
+    let cached = cache.get(entryId)
+
+    // 2. SQLite DB (survives restarts + 0G outages)
+    if (!cached) {
+      const dbEntry = getDbEntry(entryId)
+      if (dbEntry?.content) {
+        cached = {
+          content: dbEntry.content, vector: [], storageRef: dbEntry.storageRef ?? '',
+          tags: dbEntry.tags, domain: dbEntry.domain ?? undefined,
+          submittedBy: dbEntry.submitter ?? undefined,
+          onchainEntryId: entryId as `0x${string}`,
+        }
+        cache.set(entryId, cached)
+      }
+    }
+
+    // 3. Chain + 0G Storage (slowest, may fail on testnet)
+    if (!cached) {
+      const onChainEntry = await getEntryFromChain(entryId as `0x${string}`)
+      if (!onChainEntry) {
+        res.status(404).json({ error: 'entry not found on chain' }); return
+      }
+      try {
+        const blob = await downloadWithFallback(storage, onChainEntry.storageRef, entryId)
+        cached = {
+          content: blob.content, vector: [], storageRef: onChainEntry.storageRef,
+          tags: onChainEntry.tags, domain: blob.domain, submittedBy: blob.submittedBy,
+          submitterAddress: onChainEntry.submitter, onchainEntryId: entryId as `0x${string}`,
+          inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId : undefined,
+        }
+        cache.set(entryId, cached)
+        upsertEntry(entryId, { storageRef: onChainEntry.storageRef, tags: onChainEntry.tags, domain: blob.domain, submitter: blob.submittedBy ?? onChainEntry.submitter, content: blob.content, status: onChainEntry.status })
+      } catch (err) {
+        res.status(502).json({ error: '0G Storage unavailable', detail: (err as Error).message }); return
+      }
+    }
 
     const enforcePayment = process.env.ENFORCE_PAYMENT === 'true'
     const royaltyWei     = BigInt(process.env.ROYALTY_WEI ?? '1000000000000000')
@@ -345,23 +417,30 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
   app.get('/content/:entryId', async (req, res) => {
     const entryId = req.params.entryId as `0x${string}`
 
-    // Cache hit (already loaded)
+    // 1. In-memory cache
     const cached = cache.get(entryId)
     if (cached) {
       res.json({ entryId, content: cached.content, tags: cached.tags, domain: cached.domain, submittedBy: cached.submittedBy })
       return
     }
 
-    // Read storageRef from the blockchain
+    // 2. SQLite DB
+    const dbEntry = getDbEntry(entryId)
+    if (dbEntry?.content) {
+      res.json({ entryId, content: dbEntry.content, tags: dbEntry.tags, domain: dbEntry.domain, submittedBy: dbEntry.submitter })
+      return
+    }
+
+    // 3. Chain + 0G Storage
     const onChainEntry = await getEntryFromChain(entryId)
     if (!onChainEntry) {
       res.status(404).json({ error: 'Entry not found on chain' })
       return
     }
 
-    // Download content from 0G Storage
+    // Download content from 0G Storage — try both indexers
     try {
-      const blob = await downloadEntryBlob(storage, onChainEntry.storageRef, entryId)
+      const blob = await downloadWithFallback(storage, onChainEntry.storageRef, entryId)
       const entry: CachedEntry = {
         content: blob.content,
         vector: [],
@@ -369,13 +448,63 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
         tags: onChainEntry.tags,
         domain: blob.domain,
         submittedBy: blob.submittedBy,
+        submitterAddress: onChainEntry.submitter,
         onchainEntryId: entryId,
+        inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId : undefined,
       }
       cache.set(entryId, entry)
+      // Persist full content to DB
+      upsertEntry(entryId, {
+        storageRef: onChainEntry.storageRef,
+        tags: onChainEntry.tags,
+        domain: blob.domain,
+        submitter: blob.submittedBy ?? onChainEntry.submitter,
+        content: blob.content,
+        status: onChainEntry.status,
+        inftTokenId: onChainEntry.inftTokenId > 0n ? onChainEntry.inftTokenId.toString() : '0',
+      })
       res.json({ entryId, content: blob.content, tags: blob.tags, domain: blob.domain, submittedBy: blob.submittedBy })
     } catch (err) {
       res.status(502).json({ error: '0G Storage fetch failed', detail: (err as Error).message })
     }
+  })
+
+  // ─── GET /entries ─────────────────────────────────────────────────────────
+  app.get('/entries', (_req, res) => {
+    res.json(getAllDbEntries())
+  })
+
+  // ─── GET /discussions/:entryId ────────────────────────────────────────────
+  app.get('/discussions/:entryId', (req, res) => {
+    res.json(getDiscussions(req.params.entryId))
+  })
+
+  // ─── POST /discussions/:entryId ───────────────────────────────────────────
+  // Body: { author: string (ENS or address), content: string }
+  app.post('/discussions/:entryId', (req, res) => {
+    const { author, content } = req.body as { author?: string; content?: string }
+    if (!author || !content?.trim()) {
+      res.status(400).json({ error: 'author and content required' }); return
+    }
+    const info = addDiscussion(req.params.entryId, author, content.trim())
+    res.status(201).json({ id: info.lastInsertRowid, entryId: req.params.entryId, author, content: content.trim(), createdAt: Date.now() })
+  })
+
+  // ─── POST /activate/:entryId ──────────────────────────────────────────────
+  // Call activateEntry on-chain after the challenge window passes.
+  app.post('/activate/:entryId', async (req, res) => {
+    const entryId = req.params.entryId as `0x${string}`
+    const onChainEntry = await getEntryFromChain(entryId)
+    if (!onChainEntry) { res.status(404).json({ error: 'entry not found on chain' }); return }
+    if (onChainEntry.status !== 0) {
+      res.json({ entryId, inftTokenId: onChainEntry.inftTokenId.toString(), status: onChainEntry.status }); return
+    }
+    const tokenId = await activateEntryOnChain(entryId)
+      .catch(() => getInftTokenId(entryId).catch(() => null))
+    if (tokenId && tokenId > 0n) {
+      upsertEntry(entryId, { status: 1, inftTokenId: tokenId.toString() })
+    }
+    res.json({ entryId, inftTokenId: tokenId?.toString() ?? '0' })
   })
 
   // ─── POST /load-manifest ─────────────────────────────────────────────────

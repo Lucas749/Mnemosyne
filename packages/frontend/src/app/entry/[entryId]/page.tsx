@@ -28,6 +28,14 @@ export default function EntryPage() {
   const router = useRouter()
   const { nodes: graphNodes, links: graphLinks } = useGraphData(20)
 
+  const [mounted, setMounted] = useState(false)
+  useEffect(() => setMounted(true), [])
+
+  const [dbData, setDbData] = useState<{
+    content: string; tags: string[]; domain: string | null; submittedBy: string | null;
+  } | null>(null)
+  const [dbLoading, setDbLoading] = useState(false)
+
   const [activeTab, setActiveTab] = useState<'read' | 'history' | 'discuss' | 'onchain'>('read')
   const [showChallenge, setShowChallenge] = useState(false)
   const [content, setContent] = useState<string | null>(null)
@@ -37,6 +45,44 @@ export default function EntryPage() {
   const [challengeReason, setChallengeReason] = useState('')
   const [evidenceRef, setEvidenceRef] = useState('')
   const [countdown, setCountdown] = useState('')
+
+  // Discussion state
+  const [discussions, setDiscussions] = useState<{id: number; author: string; content: string; created_at: number}[]>([])
+  const [discussLoading, setDiscussLoading] = useState(false)
+  const [newComment, setNewComment] = useState('')
+  const [postingComment, setPostingComment] = useState(false)
+
+  const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
+
+  useEffect(() => {
+    if (activeTab !== 'discuss') return
+    setDiscussLoading(true)
+    fetch(`${API}/discussions/${entryId}`)
+      .then(r => r.json())
+      .then(setDiscussions)
+      .catch(() => {})
+      .finally(() => setDiscussLoading(false))
+  }, [activeTab, entryId])
+
+  async function handlePostComment() {
+    if (!newComment.trim()) return
+    const author = submitterEns ?? address ?? 'anonymous'
+    setPostingComment(true)
+    try {
+      const res = await fetch(`${API}/discussions/${entryId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ author, content: newComment.trim() }),
+      })
+      if (res.ok) {
+        const d = await res.json()
+        setDiscussions(prev => [...prev, d])
+        setNewComment('')
+      }
+    } finally {
+      setPostingComment(false)
+    }
+  }
 
   const entryIdBytes = entryId as `0x${string}`
 
@@ -76,6 +122,22 @@ export default function EntryPage() {
       handleUnlock()
     }
   }, [entry?.id])
+
+  // When chain returns nothing, try the API DB as fallback
+  useEffect(() => {
+    if (!mounted || isLoading || entry) return
+    setDbLoading(true)
+    fetch(`${API}/content/${entryId}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data?.content) {
+          setDbData(data)
+          setContent(data.content)
+        }
+      })
+      .catch(() => {})
+      .finally(() => setDbLoading(false))
+  }, [mounted, isLoading, entry])
 
   useEffect(() => {
     if (!entry) return
@@ -132,52 +194,70 @@ export default function EntryPage() {
   ]
 
   const ensName = entryEns(entryId)
-  const statusLabel = entry ? STATUS_LABELS[entry.status] ?? 'UNKNOWN' : '—'
-  const statusColor = entry ? STATUS_COLORS[entry.status] ?? T.muted : T.muted
-  const domainLabel = entry ? DOMAIN_LABELS[entry.domain] ?? 'unknown' : '—'
+  const ensUrl = `https://app.ens.domains/${ensName}`
+  const submitterEnsUrl = submitterEns ? `https://app.ens.domains/${submitterEns}` : null
+
+  // Prefer on-chain data; fall back to DB data when chain entry is missing
+  const displayStatus  = entry?.status ?? 0
+  const displayDomain  = entry ? (DOMAIN_LABELS[entry.domain] ?? 'unknown') : (dbData?.domain ?? 'unknown')
+  const statusLabel    = STATUS_LABELS[displayStatus] ?? 'PENDING'
+  const statusColor    = STATUS_COLORS[displayStatus] ?? T.muted
   const stakeFormatted = entry ? formatA0GI(entry.stakeAmount) : '—'
   const royaltiesFormatted = entry ? formatA0GI(entry.royaltiesEarned) : '—'
-  const submitterDisplay = submitterEns ?? (entry ? truncateAddress(entry.submitter) : '—')
-  const ownerDisplay = ownerData?.[0]?.result ? truncateAddress(ownerData[0].result as string) : '—'
+  const submitterRaw   = entry?.submitter ?? null
+  const submitterDisplay = submitterEns ?? (submitterRaw ? truncateAddress(submitterRaw) : (dbData?.submittedBy ?? '—'))
+  const ownerDisplay   = ownerData?.[0]?.result ? truncateAddress(ownerData[0].result as string) : '—'
   const challengeCount = challengeCountData?.[0]?.result?.toString() ?? '0'
+  const hasChainData   = !!entry
 
-  const infoRows: [string, React.ReactNode][] = entry ? [
-    ['Name', <span key="ens" style={{ color: T.accent, fontWeight: 700 }}>{ensName}</span>],
-    ['Submitted', submitterDisplay],
-    ['Address', truncateAddress(entry.submitter)],
-    ['Stake', `${stakeFormatted} A0GI`],
+  const infoRows: [string, React.ReactNode][] = [
+    ['Name', <a key="ens" href={ensUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, fontWeight: 700, textDecoration: 'none' }}>{ensName} ↗</a>],
+    ['Submitted', submitterEnsUrl
+      ? <a key="sub" href={submitterEnsUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>{submitterDisplay} ↗</a>
+      : submitterDisplay],
+    ...(submitterRaw ? [['Address', truncateAddress(submitterRaw)] as [string, React.ReactNode]] : []),
+    ...(hasChainData ? [
+      ['Stake', `${stakeFormatted} A0GI`] as [string, React.ReactNode],
+    ] : []),
     ['Status', <span key="s" style={{ color: statusColor }}>{'✓ '}{statusLabel}</span>],
-    ['Domain', domainLabel.toUpperCase()],
-    ['Queries', entry.queryCount.toLocaleString()],
-    ['Royalties', `${royaltiesFormatted} A0GI`],
-    ['Challenges', challengeCount],
-    ...(entry.inftTokenId > 0n ? [
+    ['Domain', displayDomain.toUpperCase()],
+    ...(hasChainData ? [
+      ['Queries', entry!.queryCount.toLocaleString()] as [string, React.ReactNode],
+      ['Royalties', `${royaltiesFormatted} A0GI`] as [string, React.ReactNode],
+      ['Challenges', challengeCount] as [string, React.ReactNode],
+    ] : []),
+    ...(entry && entry.inftTokenId > 0n ? [
       ['Token ID', `#${entry.inftTokenId.toString()}`] as [string, React.ReactNode],
       ['Owner', ownerDisplay] as [string, React.ReactNode],
     ] : []),
-  ] : []
+  ]
 
   const footer = countdown
     ? `Challenge window: ${countdown}`
-    : entry?.status === 0
+    : displayStatus === 0
     ? 'Challenge window OPEN'
     : 'Challenge window CLOSED'
 
-  if (isLoading) {
+  if (!mounted || isLoading || (dbLoading && !dbData)) {
     return (
       <div style={{ padding: '32px 40px', fontFamily: T.codeFont }}>
-        <div style={{ fontSize: 12, color: T.muted }}>Loading entry from 0G chain...</div>
+        <div style={{ fontSize: 12, color: T.muted }}>Loading entry...</div>
       </div>
     )
   }
 
-  if (!entry) {
+  if (!entry && !dbData) {
     return (
       <div style={{ padding: '32px 40px', fontFamily: T.codeFont }}>
-        <div style={{ fontSize: 12, color: T.danger }}>Entry not found on-chain. ID: {entryId}</div>
+        <div style={{ fontSize: 12, color: T.danger }}>Entry not found. ID: {entryId}</div>
       </div>
     )
   }
+
+  // Build a synthetic entry from DB when chain lookup fails
+  const effectiveTags   = entry?.tags ?? dbData?.tags ?? []
+  const effectiveDomain = dbData?.domain ?? null
+  const effectiveStatus = entry?.status ?? 0
 
   const titleText = content
     ? content.split('\n')[0].replace(/^#+ /, '')
@@ -188,7 +268,7 @@ export default function EntryPage() {
       <div style={{ fontSize: 10, color: T.muted, padding: '14px 0', borderBottom: `1px solid ${T.borderLight}` }}>
         <Link href="/explore" style={{ color: T.accent, textDecoration: 'none' }}>EXPLORE</Link>
         {' → '}
-        <span style={{ color: T.accent }}>{domainLabel.toUpperCase()}</span>
+        <span style={{ color: T.accent }}>{displayDomain.toUpperCase()}</span>
         {' → '}
         <span>{titleText.toUpperCase()}</span>
       </div>
@@ -209,8 +289,10 @@ export default function EntryPage() {
         ))}
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 10, color: T.muted, alignSelf: 'center', paddingBottom: 8 }}>
-          by <span style={{ color: T.accent }}>{submitterDisplay}</span>
-          {' · '}<Tag variant={entry.status === 1 ? 'success' : entry.status === 2 ? 'danger' : 'warning'}>{statusLabel}</Tag>
+          by {submitterEnsUrl
+            ? <a href={submitterEnsUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>{submitterDisplay} ↗</a>
+            : <span style={{ color: T.accent }}>{submitterDisplay}</span>}
+          {' · '}<Tag variant={displayStatus === 1 ? 'success' : displayStatus === 2 ? 'danger' : 'warning'}>{statusLabel}</Tag>
         </span>
       </div>
 
@@ -218,7 +300,7 @@ export default function EntryPage() {
         <div style={{ display: 'flex', gap: 28 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <WikiInfoBox
-              title={entry.inftTokenId > 0n ? `ENTRY — iNFT #${entry.inftTokenId}` : 'ENTRY'}
+              title={entry && entry.inftTokenId > 0n ? `ENTRY — iNFT #${entry.inftTokenId}` : 'ENTRY'}
               rows={infoRows}
               footer={footer}
             />
@@ -244,7 +326,7 @@ export default function EntryPage() {
 
             <div style={{ marginTop: 28, paddingTop: 14, borderTop: `1px solid ${T.border}` }}>
               <span style={{ fontSize: 9, color: T.muted, letterSpacing: '0.1em', marginRight: 10 }}>CATEGORIES:</span>
-              {entry.tags.map(t => (
+              {(entry?.tags ?? dbData?.tags ?? []).map(t => (
                 <span key={t} style={{ fontSize: 10, color: T.accent, marginRight: 12, cursor: 'pointer' }}>{t}</span>
               ))}
             </div>
@@ -261,7 +343,7 @@ export default function EntryPage() {
               </div>
               {[
                 { label: 'CHALLENGE ENTRY', primary: false, action: () => setShowChallenge(true) },
-                ...(entry.inftTokenId > 0n ? [
+                ...(entry && entry.inftTokenId > 0n ? [
                   { label: `BUY iNFT #${entry.inftTokenId}`, primary: true, action: () => router.push('/marketplace') },
                 ] : []),
                 { label: 'VIEW ON 0G EXPLORER ↗', primary: false, action: () => window.open(`https://chainscan-galileo.0g.ai/address/${REGISTRY_ADDRESS}`, '_blank') },
@@ -278,11 +360,11 @@ export default function EntryPage() {
 
             <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, overflow: 'hidden' }}>
               <div style={{ background: T.faint, padding: '8px 14px', borderBottom: `1px solid ${T.border}`, fontSize: 9, fontWeight: 700, letterSpacing: '0.1em', color: T.text }}>
-                DOMAIN MAP — {domainLabel.toUpperCase()}
+                DOMAIN MAP — {displayDomain.toUpperCase()}
               </div>
               <div style={{ height: 150 }}>
                 <MnemosyneForceGraph
-                  nodes={graphNodes.filter(n => n.type === 'agent' || n.domainIdx === entry.domain)}
+                  nodes={graphNodes.filter(n => n.type === 'agent' || (entry && n.domainIdx === entry.domain))}
                   links={graphLinks}
                   height={150}
                   mini
@@ -301,14 +383,14 @@ export default function EntryPage() {
             ['Address', REGISTRY_ADDRESS],
             ['Chain', '0G-Galileo (16602)'],
             ['Entry ID', entryId],
-            ['Submitter', `${truncateAddress(entry.submitter)}${submitterEns ? ` (${submitterEns})` : ''}`],
+            ['Submitter', entry ? `${truncateAddress(entry.submitter)}${submitterEns ? ` (${submitterEns})` : ''}` : (dbData?.submittedBy ?? '—')],
             ['Stake', `${stakeFormatted} A0GI`],
             ['Status', statusLabel],
-            ['Domain', domainLabel],
+            ['Domain', displayDomain],
             ['Challenge window', footer],
-            ['Queries', entry.queryCount.toLocaleString()],
+            ['Queries', entry?.queryCount.toLocaleString() ?? '—'],
             ['Royalties earned', `${royaltiesFormatted} A0GI`],
-            ...(entry.inftTokenId > 0n ? [['iNFT Token ID', `#${entry.inftTokenId}`]] : []),
+            ...(entry && entry.inftTokenId > 0n ? [['iNFT Token ID', `#${entry.inftTokenId}`]] : []),
           ].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', gap: 24, padding: '10px 0', borderBottom: `1px solid ${T.borderLight}` }}>
               <span style={{ fontSize: 10, color: T.muted, width: 160, flexShrink: 0 }}>{k}</span>
@@ -323,7 +405,7 @@ export default function EntryPage() {
           <h2 style={{ fontSize: 14, fontWeight: 700, color: T.text, borderBottom: `1px solid ${T.border}`, paddingBottom: 7, marginBottom: 20 }}>Edit History</h2>
           <div style={{ display: 'flex', gap: 20, padding: '12px 0', borderBottom: `1px solid ${T.borderLight}` }}>
             <span style={{ fontSize: 10, color: T.accent, width: 40 }}>v1.0</span>
-            <span style={{ fontSize: 10, color: T.muted, width: 90 }}>{new Date(Number(entry.submittedAt) * 1000).toLocaleDateString()}</span>
+            <span style={{ fontSize: 10, color: T.muted, width: 90 }}>{entry ? new Date(Number(entry.submittedAt) * 1000).toLocaleDateString() : '—'}</span>
             <span style={{ fontSize: 10, color: T.accent, width: 100 }}>{submitterDisplay}</span>
             <span style={{ fontSize: 10, color: T.text, flex: 1 }}>Initial submission</span>
           </div>
@@ -333,8 +415,42 @@ export default function EntryPage() {
       {activeTab === 'discuss' && (
         <div style={{ maxWidth: 680 }}>
           <h2 style={{ fontSize: 14, fontWeight: 700, color: T.text, borderBottom: `1px solid ${T.border}`, paddingBottom: 7, marginBottom: 20 }}>Discussion</h2>
-          <p style={{ fontSize: 12, color: T.muted }}>No discussion yet. Be the first to raise a point about this entry.</p>
-          <BtnGhost style={{ marginTop: 16 }}>START DISCUSSION</BtnGhost>
+
+          {discussLoading ? (
+            <p style={{ fontSize: 12, color: T.muted }}>Loading...</p>
+          ) : discussions.length === 0 ? (
+            <p style={{ fontSize: 12, color: T.muted }}>No discussion yet. Be the first to raise a point about this entry.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginBottom: 24 }}>
+              {discussions.map(d => (
+                <div key={d.id} style={{ borderLeft: `3px solid ${T.border}`, paddingLeft: 16 }}>
+                  <div style={{ display: 'flex', gap: 12, alignItems: 'baseline', marginBottom: 6 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: T.accent }}>{d.author}</span>
+                    <span style={{ fontSize: 9, color: T.muted }}>{new Date(d.created_at).toLocaleString()}</span>
+                  </div>
+                  <p style={{ fontSize: 12, color: T.text, margin: 0, lineHeight: 1.6 }}>{d.content}</p>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 20, marginTop: 8 }}>
+            <div style={{ fontSize: 10, color: T.muted, marginBottom: 8, letterSpacing: '0.08em' }}>
+              POSTING AS: <span style={{ color: T.accent }}>{submitterEns ?? (address ? truncateAddress(address) : 'anonymous')}</span>
+            </div>
+            <textarea
+              value={newComment}
+              onChange={e => setNewComment(e.target.value)}
+              placeholder="Share a thought, correction, or reference..."
+              rows={4}
+              style={{ width: '100%', background: T.bg, border: `1px solid ${T.border}`, borderRadius: 3, padding: '10px 12px', fontFamily: T.codeFont, fontSize: 12, color: T.text, boxSizing: 'border-box', resize: 'vertical' }}
+            />
+            <div style={{ marginTop: 10, display: 'flex', justifyContent: 'flex-end' }}>
+              <BtnPrimary onClick={handlePostComment} disabled={postingComment || !newComment.trim()}>
+                {postingComment ? 'POSTING...' : 'POST →'}
+              </BtnPrimary>
+            </div>
+          </div>
         </div>
       )}
 

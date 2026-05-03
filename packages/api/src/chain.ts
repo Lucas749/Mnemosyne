@@ -2,6 +2,15 @@ import { createWalletClient, createPublicClient, http, defineChain } from 'viem'
 import { privateKeyToAccount } from 'viem/accounts'
 import { routeRoyalty } from '@mnemosyne/payments'
 
+// Deployed contract addresses — overridable via env vars
+const ADDR = {
+  registry: (process.env.MNEMOSYNE_REGISTRY_ADDRESS ?? '0xaA40404DC25248c886c8fb6C27e34536aB2b8001') as `0x${string}`,
+  inft:     (process.env.MNEMOSYNE_INFT_ADDRESS     ?? '0x8fbDb7666F8D301d9C974982764ab1B39917cc82') as `0x${string}`,
+  market:   (process.env.MNEMOSYNE_MARKET_ADDRESS   ?? '0x8fADa38137C0407800c0320BBf6985D08016E8A3') as `0x${string}`,
+  challenge:(process.env.CHALLENGE_ADDRESS           ?? '0xAe66d96339f43F72BCB0164F70E0cB90FA959166') as `0x${string}`,
+  vault:    (process.env.ROYALTY_VAULT_ADDRESS       ?? '0x4ad5B6a01CDCAcaC31Ce89e9B6e92EB5c8207507') as `0x${string}`,
+}
+
 const zgTestnet = defineChain({
   id: 16602,
   name: '0G-Galileo-Testnet',
@@ -104,7 +113,7 @@ function clients() {
  */
 export async function readVaultClaimable(addresses: `0x${string}`[]): Promise<Map<`0x${string}`, bigint>> {
   const c = clients()
-  const vault = process.env.ROYALTY_VAULT_ADDRESS as `0x${string}` | undefined
+  const vault = ADDR.vault
   const result = new Map<`0x${string}`, bigint>()
   if (!c || !vault) return result
 
@@ -151,7 +160,7 @@ export async function distributeViaUniswap(
   const rpcUrl   = process.env.ETH_RPC_URL
   const ensRpc   = process.env.SEPOLIA_RPC
 
-  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  const registry = ADDR.registry
   const c        = clients()
   const results: DistributeResult[] = []
 
@@ -201,8 +210,7 @@ export async function submitOnChain(
 ): Promise<`0x${string}` | null> {
   const c = clients()
   if (!c) return null
-  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
-  if (!registry) return null
+  const registry = ADDR.registry
 
   const hash = await c.wallet.writeContract({
     address: registry,
@@ -225,8 +233,7 @@ export async function submitOnChain(
 export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigint | null> {
   const c = clients()
   if (!c) return null
-  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
-  if (!registry) return null
+  const registry = ADDR.registry
 
   const hash = await c.wallet.writeContract({
     address: registry,
@@ -250,7 +257,7 @@ export async function getEntryFromChain(entryId: `0x${string}`): Promise<{
   submitter: `0x${string}`; stakeAmount: bigint; status: number; inftTokenId: bigint
 } | null> {
   const c = clients()
-  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  const registry = ADDR.registry
   if (!c || !registry) return null
   try {
     return await c.pub.readContract({
@@ -266,7 +273,7 @@ export async function getEntryFromChain(entryId: `0x${string}`): Promise<{
  */
 export async function getInftTokenId(entryId: `0x${string}`): Promise<bigint> {
   const c = clients()
-  const registry = process.env.MNEMOSYNE_REGISTRY_ADDRESS as `0x${string}` | undefined
+  const registry = ADDR.registry
   if (!c || !registry) return 0n
 
   const entry = await c.pub.readContract({
@@ -290,7 +297,7 @@ export async function resolveRoyaltyRecipient(
   fallback: `0x${string}`,
 ): Promise<`0x${string}`> {
   const c = clients()
-  const inft   = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  const inft   = ADDR.inft
   const market = marketAddress()
   if (!c || !inft) return fallback
 
@@ -329,8 +336,7 @@ export async function authorizeUsageOnChain(
 ): Promise<`0x${string}` | null> {
   const c = clients()
   if (!c) return null
-  const inft = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
-  if (!inft) return null
+  const inft = ADDR.inft
 
   return c.wallet.writeContract({
     address: inft,
@@ -351,8 +357,7 @@ export async function depositQueryFeeOnChain(
 ): Promise<`0x${string}` | null> {
   const c = clients()
   if (!c || contributors.length === 0) return null
-  const vault = process.env.ROYALTY_VAULT_ADDRESS as `0x${string}` | undefined
-  if (!vault) return null
+  const vault = ADDR.vault
 
   const n      = BigInt(contributors.length)
   const share  = BigInt(10000) / n
@@ -377,7 +382,7 @@ export interface MarketListing {
 }
 
 function marketAddress() {
-  return process.env.MNEMOSYNE_MARKET_ADDRESS as `0x${string}` | undefined
+  return ADDR.market
 }
 
 export async function getActiveListings(): Promise<MarketListing[]> {
@@ -402,7 +407,7 @@ export async function listOnMarket(
 ): Promise<`0x${string}` | null> {
   const c = clients()
   const market = marketAddress()
-  const inft   = process.env.MNEMOSYNE_INFT_ADDRESS as `0x${string}` | undefined
+  const inft   = ADDR.inft
   if (!c || !market || !inft) return null
 
   // Approve market to move the iNFT (API wallet owns it after minting)

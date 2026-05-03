@@ -1,15 +1,13 @@
 'use client'
 
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState } from 'react'
 import { useRouter } from 'next/navigation'
-import dynamic from 'next/dynamic'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useAccount } from 'wagmi'
 import { Tag, BtnPrimary, BtnGhost } from '@/components/design-system'
 import { T } from '@/components/design-system'
-import { submitEntry, queryKnowledge, pollJob, type QueryMatch } from '@/lib/api'
-import { DOMAIN_LABELS } from '@/lib/contracts'
+import { submitEntry, pollJob } from '@/lib/api'
 import { truncateAddress } from '@/lib/ens'
 
 const PROGRESS_STEPS = [
@@ -19,7 +17,7 @@ const PROGRESS_STEPS = [
 ]
 const PROGRESS_IDX: Record<string, number> = { uploading: 0, embedding: 1, staking: 2, done: 3 }
 
-const DOMAINS = ['factual', 'labeled_example', 'structured_data', 'observation', 'correction']
+const DOMAIN_SUGGESTIONS = ['ECONOMICS', 'CRYPTOGRAPHY', 'ARCHITECTURE', 'AI', 'BLOCKCHAIN', 'PROTOCOL', 'GOVERNANCE', 'HISTORY', 'SCIENCE']
 
 export default function SubmitPage() {
   const router = useRouter()
@@ -33,29 +31,8 @@ export default function SubmitPage() {
   const [progress, setProgress] = useState<string | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [similar, setSimilar] = useState<QueryMatch[]>([])
-  const [queryJobId, setQueryJobId] = useState<string | null>(null)
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const fullContent = title ? `# ${title}\n\n${content}` : content
-
-  useEffect(() => {
-    if (!fullContent.trim() || fullContent.length < 20) return
-    if (debounceRef.current) clearTimeout(debounceRef.current)
-    debounceRef.current = setTimeout(async () => {
-      try {
-        const jid = await queryKnowledge({ text: fullContent.slice(0, 200), topK: 3 })
-        setQueryJobId(jid)
-        const result = await pollJob<{ matches: QueryMatch[] }>(jid)
-        setSimilar(result.matches ?? [])
-      } catch {
-        // similarity preview is best-effort
-      }
-    }, 800)
-    return () => {
-      if (debounceRef.current) clearTimeout(debounceRef.current)
-    }
-  }, [fullContent])
 
   async function handleSubmit() {
     setError(null)
@@ -98,9 +75,16 @@ export default function SubmitPage() {
         />
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           <span style={{ fontSize: 9, color: T.muted, letterSpacing: '0.1em' }}>DOMAIN</span>
-          <select value={domain} onChange={e => setDomain(e.target.value)} style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 3, padding: '5px 10px', fontFamily: T.codeFont, fontSize: 10, color: T.text, cursor: 'pointer' }}>
-            {DOMAINS.map(d => <option key={d} value={d}>{d}</option>)}
-          </select>
+          <input
+            list="domain-suggestions"
+            value={domain}
+            onChange={e => setDomain(e.target.value.toUpperCase())}
+            placeholder="e.g. ECONOMICS"
+            style={{ background: T.bg, border: `1px solid ${T.border}`, borderRadius: 3, padding: '5px 10px', fontFamily: T.codeFont, fontSize: 10, color: T.text, width: 140 }}
+          />
+          <datalist id="domain-suggestions">
+            {DOMAIN_SUGGESTIONS.map(d => <option key={d} value={d} />)}
+          </datalist>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           {tags.map(tag => (
@@ -148,31 +132,6 @@ export default function SubmitPage() {
           </div>
         </div>
 
-        {/* Similarity panel */}
-        <div style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
-          <div style={{ padding: '10px 20px', borderBottom: `1px solid ${T.border}`, background: T.faint, fontSize: 9, letterSpacing: '0.12em', color: T.muted }}>
-            SIMILAR EXISTING ENTRIES
-          </div>
-          <div style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-            {similar.length > 0 ? similar.map(s => (
-              <div key={s.entryId} style={{ marginBottom: 14, padding: '10px 12px', background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3 }}>
-                <div style={{ fontSize: 18, fontWeight: 700, color: s.similarity > 0.8 ? T.danger : T.warning, marginBottom: 4 }}>
-                  {Math.round(s.similarity * 100)}%
-                </div>
-                <div style={{ fontSize: 10, color: T.accent, lineHeight: 1.5, cursor: 'pointer' }}>
-                  {s.entryId.slice(0, 20)}...
-                </div>
-                <div style={{ fontSize: 9, color: T.muted, marginTop: 4 }}>
-                  {s.domain} · by {s.submittedBy}
-                </div>
-              </div>
-            )) : (
-              <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.7 }}>
-                Similarity search runs as you type. Duplicate entries waste stake.
-              </div>
-            )}
-          </div>
-        </div>
       </div>
 
       {/* Footer */}

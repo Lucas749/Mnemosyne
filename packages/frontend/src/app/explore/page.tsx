@@ -6,50 +6,45 @@ import Link from 'next/link'
 import { MnemosyneForceGraph } from '@/components/force-graph'
 import { Tag } from '@/components/design-system'
 import { T } from '@/components/design-system'
-import { useGraphData, type FgNode, type OnChainEntry } from '@/hooks/use-graph-data'
+import { useGraphData, type FgNode } from '@/hooks/use-graph-data'
 import { entryEns } from '@/lib/entry-name'
 import { STATUS_LABELS } from '@/lib/contracts'
+
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
+
+const ZERO_ID = '0x0000000000000000000000000000000000000000000000000000000000000000'
+
+type ApiEntry = {
+  entryId: string
+  storageRef: string | null
+  tags: string[]
+  domain: string | null
+  submitter: string | null
+  status: number
+  content: string | null
+  contentPreview: string | null
+  submittedAt: number | null
+  inftTokenId: string
+}
 
 // Knowledge domains extracted from entry tags
 const KNOWLEDGE_DOMAINS = ['ALL', 'ECONOMICS', 'CRYPTOGRAPHY', 'ARCHITECTURE', 'AI', 'BLOCKCHAIN', 'PROTOCOL', 'GOVERNANCE', 'HISTORY', 'SCIENCE']
 
-function matchesDomain(entry: OnChainEntry, domain: string): boolean {
+function matchesDomain(entry: ApiEntry, domain: string): boolean {
   if (domain === 'ALL') return true
   return entry.tags.some(t => t.toUpperCase() === domain || t.toUpperCase().includes(domain))
 }
 
-const DOMAIN_DESCRIPTIONS: Record<string, string> = {
-  ECONOMICS: 'Covers tokenomics, staking mechanisms, fee models, economic incentives, and market dynamics in decentralized systems.',
-  CRYPTOGRAPHY: 'Zero-knowledge proofs, cryptographic primitives, privacy techniques, and proof systems used in blockchain protocols.',
-  ARCHITECTURE: 'System design, storage layers, network topology, consensus mechanisms, and infrastructure components.',
-  AI: 'Machine learning models, agent memory systems, LLM integrations, and AI tooling for blockchain applications.',
-  BLOCKCHAIN: 'On-chain data structures, smart contract patterns, protocol internals, and chain-specific implementations.',
-  PROTOCOL: 'Protocol specifications, standard definitions, interface contracts, and governance frameworks.',
-  GOVERNANCE: 'Decentralized governance models, voting mechanisms, DAO structures, and protocol upgrade processes.',
-  NFT: 'Non-fungible token standards, metadata schemas, royalty models, and marketplace mechanics.',
-}
-
-function generatePreview(entry: OnChainEntry): string {
-  const knowledgeTags = entry.tags.filter(t =>
-    !['factual','labeled_example','structured_data','observation','correction'].includes(t.toLowerCase())
-  )
-  const primaryTag = knowledgeTags[0]?.toUpperCase() ?? ''
-  const base = DOMAIN_DESCRIPTIONS[primaryTag] ?? ''
-  if (base) return base
-  if (knowledgeTags.length > 0) {
-    return `This entry covers ${knowledgeTags.slice(0, 3).join(', ').toLowerCase()}. Click to read the full article and view on-chain provenance data.`
-  }
-  return 'On-chain knowledge entry. Click to read the full article.'
-}
-
-function EntryCard({ entry }: { entry: OnChainEntry }) {
-  const name = entryEns(entry.id)
+function EntryCard({ entry }: { entry: ApiEntry }) {
+  const name = entryEns(entry.entryId as `0x${string}`)
   const topTags = entry.tags.filter(t => !['factual','labeled_example','structured_data','observation','correction'].includes(t.toLowerCase())).slice(0, 4)
   const statusLabel = STATUS_LABELS[entry.status] ?? 'PENDING'
-  const preview = generatePreview(entry)
+  const preview = entry.contentPreview
+    ? entry.contentPreview.slice(0, 200).replace(/\n+/g, ' ')
+    : 'On-chain knowledge entry. Click to read the full article.'
 
   return (
-    <Link href={`/entry/${entry.id}`} style={{ textDecoration: 'none' }}>
+    <Link href={`/entry/${entry.entryId}`} style={{ textDecoration: 'none' }}>
       <div style={{
         padding: '20px 24px', borderBottom: `1px solid ${T.borderLight}`,
         cursor: 'pointer',
@@ -72,13 +67,14 @@ function EntryCard({ entry }: { entry: OnChainEntry }) {
               <Tag variant={entry.status === 1 ? 'success' : entry.status === 2 ? 'danger' : 'warning'}>
                 {statusLabel}
               </Tag>
-              <span style={{ fontSize: 9, color: T.muted, marginLeft: 8 }}>
-                by {entry.submitter.slice(0, 10)}...
-              </span>
+              {entry.submitter && (
+                <span style={{ fontSize: 9, color: T.muted, marginLeft: 8 }}>
+                  by {entry.submitter.slice(0, 10)}...
+                </span>
+              )}
             </div>
           </div>
           <div style={{ textAlign: 'right', flexShrink: 0, paddingTop: 4 }}>
-            <div style={{ fontSize: 10, color: T.muted }}>{entry.queryCount.toLocaleString()} queries</div>
             <div style={{ fontSize: 9, color: T.accent, marginTop: 6 }}>READ →</div>
           </div>
         </div>
@@ -93,12 +89,25 @@ function ExploreInner() {
   const urlTag = searchParams.get('tag') ?? searchParams.get('domain') ?? 'ALL'
 
   const [domain, setDomain] = useState(urlTag.toUpperCase())
-  const [view, setView] = useState<'list' | 'graph'>(urlTag !== 'ALL' ? 'list' : 'list')
+  const [view, setView] = useState<'list' | 'graph'>('list')
   const [statusFilter, setStatusFilter] = useState('ALL')
   const [graphHeight, setGraphHeight] = useState(600)
   const containerRef = useRef<HTMLDivElement>(null)
 
-  const { nodes, links, entries, loading } = useGraphData(120)
+  const [apiEntries, setApiEntries] = useState<ApiEntry[]>([])
+  const [apiLoading, setApiLoading] = useState(true)
+
+  const { nodes, links } = useGraphData(120)
+
+  useEffect(() => {
+    fetch(`${API}/entries`)
+      .then(r => r.json())
+      .then((data: ApiEntry[]) => {
+        setApiEntries(data.filter(e => e.entryId !== ZERO_ID && e.content))
+        setApiLoading(false)
+      })
+      .catch(() => setApiLoading(false))
+  }, [])
 
   useEffect(() => {
     const tag = searchParams.get('tag') ?? searchParams.get('domain') ?? 'ALL'
@@ -114,7 +123,7 @@ function ExploreInner() {
     return () => ro.disconnect()
   }, [])
 
-  const filteredEntries = entries.filter(e => {
+  const filteredEntries = apiEntries.filter(e => {
     const domainMatch = matchesDomain(e, domain)
     const statusMatch = statusFilter === 'ALL'
       || (statusFilter === 'ACTIVE' && e.status === 1)
@@ -172,27 +181,27 @@ function ExploreInner() {
         </div>
 
         <div style={{ marginLeft: 'auto', fontSize: 9, color: T.muted }}>
-          {loading ? 'loading...' : `${filteredEntries.length} entries · ${agentCount} agents`}
+          {apiLoading ? 'loading...' : `${filteredEntries.length} entries · ${agentCount} agents`}
         </div>
       </div>
 
       {/* Article list view */}
       {view === 'list' && (
         <div style={{ flex: 1, overflowY: 'auto', background: T.bg }}>
-          {loading && filteredEntries.length === 0 && (
-            <div style={{ padding: '32px 24px', fontSize: 11, color: T.muted }}>Loading entries from chain...</div>
+          {apiLoading && (
+            <div style={{ padding: '32px 24px', fontSize: 11, color: T.muted }}>Loading entries...</div>
           )}
-          {!loading && filteredEntries.length === 0 && (
+          {!apiLoading && filteredEntries.length === 0 && (
             <div style={{ padding: '32px 24px', fontSize: 11, color: T.muted }}>
               No entries found for domain <strong>{domain}</strong>.
               {domain !== 'ALL' && (
-                <span> Entries are tagged with knowledge topics — try <Link href="/explore" style={{ color: T.accent }}>ALL</Link>.</span>
+                <span> Try <Link href="/explore" style={{ color: T.accent }}>ALL</Link>.</span>
               )}
             </div>
           )}
           <div style={{ maxWidth: 860, margin: '0 auto' }}>
             {filteredEntries.map(entry => (
-              <EntryCard key={entry.id} entry={entry} />
+              <EntryCard key={entry.entryId} entry={entry} />
             ))}
           </div>
         </div>
