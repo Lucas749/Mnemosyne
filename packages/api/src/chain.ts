@@ -126,6 +126,25 @@ function decodeEntrySubmittedFromReceipt(
   return null
 }
 
+function decodeActivatedInftTokenId(
+  receipt: { status: string; logs: readonly { address: `0x${string}`; data: `0x${string}`; topics: readonly `0x${string}`[] }[] },
+  registry: `0x${string}`,
+): bigint | null {
+  const reg = registry.toLowerCase()
+  for (const log of receipt.logs) {
+    if (log.address.toLowerCase() !== reg) continue
+    try {
+      const decoded = decodeEventLog({ abi: REGISTRY_ABI, data: log.data, topics: log.topics })
+      if (decoded.eventName === 'EntryActivated') {
+        return decoded.args.inftTokenId as bigint
+      }
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
 function clients() {
   const key = process.env.ZG_PRIVATE_KEY
   if (!key) return null
@@ -368,6 +387,8 @@ export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigi
   const c = clients()
   if (!c) return null
   const registry = ADDR.registry
+  const waitMs = Number(process.env.ZG_ACTIVATE_RECEIPT_WAIT_MS ?? 480_000)
+  const pollMs = Number(process.env.ZG_ACTIVATE_RECEIPT_POLL_MS ?? 4_000)
 
   const hash = await c.wallet.writeContract({
     address: registry,
@@ -375,13 +396,57 @@ export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigi
     functionName: 'activateEntry',
     args: [entryId],
   })
+  console.log(`[activateEntryOnChain] tx broadcast HASH=${hash} entryId=${entryId}`)
 
-  const receipt = await c.pub.waitForTransactionReceipt({ hash })
-  const log = receipt.logs.find(l => l.topics[0] === '0x' + Buffer.from('EntryActivated(bytes32,uint256)').toString('hex'))
-  // topics[2] is the inftTokenId (2nd indexed arg)
-  const tokenIdHex = receipt.logs[0]?.topics[2]
-  return tokenIdHex ? BigInt(tokenIdHex) : null
+  const receipt = await withRetry(
+    () =>
+      c.pub.waitForTransactionReceipt({
+        hash,
+        timeout: Number.isFinite(waitMs) && waitMs > 30_000 ? waitMs : 480_000,
+        pollingInterval: Number.isFinite(pollMs) && pollMs > 500 ? pollMs : 4_000,
+      }),
+    { maxAttempts: 3, baseDelayMs: 2_000, label: '[activateEntryOnChain] waitReceipt' },
+  )
+
+  if (receipt.status !== 'success') {
+    console.error(`[activateEntryOnChain] receipt status=${receipt.status} HASH=${hash}`)
+    try {
+      const tid = await getInftTokenId(entryId)
+      return tid > 0n ? tid : null
+    } catch {
+      return null
+    }
+  }
+
+  const fromLog = decodeActivatedInftTokenId(receipt, registry)
+  if (fromLog != null && fromLog > 0n) {
+    console.log(`[activateEntryOnChain] decoded iNFT tokenId=${fromLog} entryId=${entryId}`)
+    return fromLog
+  }
+
+  console.warn('[activateEntryOnChain] EntryActivated decode miss — fallback getEntry.inftTokenId')
+  try {
+    const tid = await getInftTokenId(entryId)
+    return tid > 0n ? tid : null
+  } catch {
+    return null
+  }
 }
+
+/**
+ * Read the entryId from an EntrySubmitted event in a given tx receipt.
+ * Used by /store/confirm to index a user-signed submit tx.
+ */
+export async function getEntryIdFromTxHash(txHash: `0x${string}`): Promise<`0x${string}` | null> {
+  const c = clients()
+  if (!c) return null
+  const receipt = await c.pub.getTransactionReceipt({ hash: txHash }).catch(() => null)
+  if (!receipt || receipt.status !== 'success') return null
+  return decodeEntrySubmittedFromReceipt(receipt, ADDR.registry)
+}
+
+/** The minimum stake required by MnemosyneRegistry.submit() */
+export const REGISTRY_ADDRESS = ADDR.registry
 
 /**
  * Read a full Entry struct from the registry on-chain.

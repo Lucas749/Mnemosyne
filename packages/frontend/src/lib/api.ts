@@ -94,11 +94,40 @@ export async function pollJob<T>(jobId: string, onProgress?: (status: string) =>
   })
 }
 
+export async function activateEntryMint(entryId: string): Promise<{
+  entryId: string
+  inftTokenId: string
+  status?: number
+  error?: string
+  detail?: string
+}> {
+  const r = await fetch(`${API}/activate/${encodeURIComponent(entryId)}`, { method: 'POST' })
+  const j = (await r.json().catch(() => ({}))) as {
+    entryId?: string; inftTokenId?: string; status?: number; error?: string; detail?: string
+  }
+  if (!r.ok) {
+    throw new Error(j.detail || j.error || `Activate failed: ${r.status}`)
+  }
+  return {
+    entryId: j.entryId ?? entryId,
+    inftTokenId: j.inftTokenId ?? '0',
+    status: j.status,
+  }
+}
+
+export async function fetchAttributedEntryIds(wallet: string): Promise<string[]> {
+  const r = await fetch(`${API}/entries/attributed/${encodeURIComponent(wallet)}`)
+  if (!r.ok) return []
+  const j = (await r.json()) as { entryIds?: unknown }
+  return Array.isArray(j.entryIds) ? (j.entryIds as string[]) : []
+}
+
 export async function submitEntry(payload: {
   content: string
   domain: string
   tags: string[]
   submittedBy: string
+  attributionWallet?: string
 }): Promise<string> {
   const r = await fetch(`${API}/store`, {
     method: 'POST',
@@ -108,6 +137,54 @@ export async function submitEntry(payload: {
   if (!r.ok) throw new Error(`Store failed: ${r.status}`)
   const { jobId } = await r.json()
   return jobId
+}
+
+export type PrepareResult = {
+  storageRef: string
+  embeddingRef: string
+  encryptionKeyId: string
+  registryAddress: `0x${string}`
+  domainIndex: number
+  stakeWei: string
+}
+
+export async function prepareEntry(payload: {
+  content: string
+  domain: string
+  tags: string[]
+  submittedBy: string
+}): Promise<string> {
+  const r = await fetch(`${API}/store/prepare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!r.ok) throw new Error(`Prepare failed: ${r.status}`)
+  const { jobId } = await r.json()
+  return jobId
+}
+
+export async function confirmEntry(payload: {
+  txHash: `0x${string}`
+  storageRef: string
+  embeddingRef: string
+  encryptionKeyId: string
+  content: string
+  domain: string
+  tags: string[]
+  submittedBy: string
+  attributionWallet?: string
+}): Promise<{ entryId: string; txHash: string }> {
+  const r = await fetch(`${API}/store/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!r.ok) {
+    const err = await r.json().catch(() => ({})) as { error?: string }
+    throw new Error(err.error ?? `Confirm failed: ${r.status}`)
+  }
+  return r.json()
 }
 
 export async function queryKnowledge(payload: {

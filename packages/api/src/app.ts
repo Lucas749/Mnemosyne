@@ -14,9 +14,12 @@ import {
   activeEntries,
 } from '@mnemosyne/storage'
 import { getMemoryIndex, setMemoryIndex } from '@mnemosyne/identity'
-import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice } from './chain.js'
+import { submitOnChain, depositQueryFeeOnChain, authorizeUsageOnChain, getOperatorAddress, resolveRoyaltyRecipient, activateEntryOnChain, getInftTokenId, getEntryFromChain, distributeViaUniswap, readVaultClaimable, getActiveListings, listOnMarket, buyFromMarket, cancelMarketListing, updateMarketPrice, getEntryIdFromTxHash, REGISTRY_ADDRESS, REGISTRY_SUBMIT_STAKE_WEI } from './chain.js'
 import { registerEntryEnsName } from './ens.js'
-import { upsertEntry, getDbEntry, migrateEntryPrimaryKey, getAllDbEntries, deleteEntry, addDiscussion, getDiscussions } from './db.js'
+import {
+  upsertEntry, getDbEntry, migrateEntryPrimaryKey, getAllDbEntries, deleteEntry,
+  addDiscussion, getDiscussions, getEntryIdsByAttributionWallet,
+} from './db.js'
 import type { DistributeEntry } from './chain.js'
 import type { EntryBlob, ManifestEntry } from '@mnemosyne/types'
 import type { ComputeClient } from '@mnemosyne/compute'
@@ -117,7 +120,9 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     res.json({ status: 'ok', entries: cache.size })
   })
 
-  // ─── GET /jobs/:jobId ─────────────────────────────────────────────────────
+  app.get('/entries/attributed/:wallet', (req, res) => {
+    res.json({ entryIds: getEntryIdsByAttributionWallet(req.params.wallet) })
+  })
 
   app.get('/jobs/:jobId', (req, res) => {
     const job = jobs.get(req.params.jobId)
@@ -137,6 +142,12 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     const domain         = body.domain ?? 'factual'
     const tags           = body.tags ?? []
     const submittedBy    = body.submittedBy ?? 'agent'
+    const attributionRaw = (body.attributionWallet ?? '').trim()
+    const attributionWallet = /^0x[a-f0-9]{40}$/i.test(attributionRaw)
+      ? attributionRaw.toLowerCase()
+      : /^0x[a-f0-9]{40}$/i.test(String(submittedBy).trim())
+        ? String(submittedBy).trim().toLowerCase()
+        : undefined
 
     const STORE_JOB_RAW = Number(process.env.STORE_JOB_TIMEOUT_MS ?? 1_800_000)
     const STORE_JOB_MS = Number.isFinite(STORE_JOB_RAW) && STORE_JOB_RAW >= 120_000 ? STORE_JOB_RAW : 1_800_000
@@ -293,7 +304,7 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       cache.set(dbPublicId, cacheEntry)
 
       upsertEntry(dbPublicId, {
-        storageRef, tags, domain, submitter: submittedBy,
+        storageRef, tags, domain, submitter: submittedBy, submitterWallet: attributionWallet ?? null,
         content: body.content, submittedAt: Math.floor(Date.now() / 1000),
         submitTxHash: onchainSubmission.txHash ?? null,
         encryptionEntryId: encryptionKeyId,
@@ -403,6 +414,166 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       console.error(`[store:${jobId}] FAILED:`, msg, err)
       jobs.set(jobId, { status: 'error', error: msg, createdAt: Date.now() })
     })
+  })
+
+  // ─── POST /store/prepare ─────────────────────────────────────────────────
+  // Phase-1 of user-signed submit: upload content to 0G, return refs + stake params.
+  // The frontend then calls MnemosyneRegistry.submit from the user's wallet (wagmi).
+
+  app.post('/store/prepare', (req, res) => {
+    const jobId = '0x' + randomBytes(8).toString('hex')
+    jobs.set(jobId, { status: 'pending', createdAt: Date.now() })
+    res.status(202).json({ jobId })
+
+    const body = req.body as StoreRequest
+    const encryptionKeyId = '0x' + randomBytes(16).toString('hex')
+    const domain = body.domain ?? 'factual'
+    const tags = body.tags ?? []
+    const submittedBy = body.submittedBy ?? 'agent'
+    const DOMAIN_INDEX_MAP: Record<string, number> = {
+      factual: 0, labeled_example: 1, structured_data: 2, observation: 3, correction: 4,
+    }
+
+    const PREPARE_TIMEOUT_MS = 900_000
+    const timeout = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`prepare timed out after ${PREPARE_TIMEOUT_MS}ms`)), PREPARE_TIMEOUT_MS)
+    )
+
+    ;(async () => {
+      const blob: EntryBlob = {
+        id: encryptionKeyId,
+        content: body.content,
+        domain,
+        tags,
+        sources: [],
+        submittedBy,
+        submittedAt: Math.floor(Date.now() / 1000),
+        checksum: '',
+      }
+
+      const storageRef = await Promise.race([
+        withRetryBroad(() => uploadEntryBlob(storage, blob), { maxAttempts: 6, baseDelayMs: 400, label: '[prepare] upload' }),
+        timeout,
+      ])
+
+      let embeddingRef = ''
+      if (compute) {
+        try {
+          const embBlob = await Promise.race([generateEmbedding(compute, encryptionKeyId, body.content), timeout])
+          embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
+        } catch {
+          // embedding optional
+        }
+      }
+
+      jobs.set(jobId, {
+        status: 'done',
+        result: {
+          storageRef,
+          embeddingRef,
+          encryptionKeyId,
+          registryAddress: REGISTRY_ADDRESS,
+          domainIndex: DOMAIN_INDEX_MAP[domain] ?? 0,
+          stakeWei: REGISTRY_SUBMIT_STAKE_WEI.toString(),
+        },
+        createdAt: Date.now(),
+      })
+    })().catch((err) => {
+      const msg = (err as Error)?.message ?? String(err)
+      jobs.set(jobId, { status: 'error', error: msg, createdAt: Date.now() })
+    })
+  })
+
+  // ─── POST /store/confirm ──────────────────────────────────────────────────
+  // Phase-2: frontend sends the user's txHash + refs; we read the entryId from
+  // the EntrySubmitted event and index the entry in DB + ENS manifest.
+
+  app.post('/store/confirm', async (req, res) => {
+    const {
+      txHash,
+      storageRef,
+      embeddingRef = '',
+      encryptionKeyId,
+      content,
+      domain = 'factual',
+      tags = [],
+      submittedBy = 'agent',
+      attributionWallet,
+    } = req.body as {
+      txHash: `0x${string}`
+      storageRef: string
+      embeddingRef?: string
+      encryptionKeyId: string
+      content: string
+      domain: string
+      tags: string[]
+      submittedBy: string
+      attributionWallet?: string
+    }
+
+    if (!txHash || !storageRef || !content) {
+      res.status(400).json({ error: 'txHash, storageRef, and content are required' })
+      return
+    }
+
+    const entryId = await getEntryIdFromTxHash(txHash)
+    if (!entryId) {
+      res.status(422).json({ error: 'EntrySubmitted event not found in tx — check txHash and chain' })
+      return
+    }
+
+    const dbPublicId = entryId
+
+    upsertEntry(dbPublicId, {
+      storageRef, tags, domain, submitter: submittedBy,
+      submitterWallet: attributionWallet ?? null,
+      content, submittedAt: Math.floor(Date.now() / 1000),
+      submitTxHash: txHash,
+      encryptionEntryId: encryptionKeyId ?? dbPublicId,
+    })
+
+    cache.set(dbPublicId, {
+      content, vector: [], storageRef, tags, domain, submittedBy,
+      onchainEntryId: dbPublicId, submitTxHash: txHash,
+      encryptionEntryId: encryptionKeyId ?? dbPublicId,
+      challengeWindowEnd: Math.floor((Date.now() + 5 * 60 * 1000) / 1000),
+      edges: {}, queriedByAgents: [],
+    })
+
+    // Update ENS manifest async (non-blocking for response)
+    const ensKey = process.env.ENS_PRIVATE_KEY as `0x${string}` | undefined
+    const collectiveManifest = process.env.ENS_MEMORY_INDEX_DOMAIN?.trim() || 'mnemosyne.eth'
+    if (ensKey) {
+      const manifestOwners: string[] = []
+      if (submittedBy.endsWith('.eth')) manifestOwners.push(submittedBy)
+      if (!manifestOwners.some(o => o.toLowerCase() === collectiveManifest.toLowerCase())) {
+        manifestOwners.push(collectiveManifest)
+      }
+      const manifestEntryPayload: ManifestEntry = {
+        entryId: dbPublicId,
+        ...(encryptionKeyId && encryptionKeyId !== dbPublicId ? { storageDecryptId: encryptionKeyId } : {}),
+        storageRef, embeddingRef,
+        domain: domain as ManifestEntry['domain'],
+        tags, status: 'active',
+        submittedAt: Math.floor(Date.now() / 1000),
+      }
+      ;(async () => {
+        for (const ownerEns of manifestOwners) {
+          const currentRef = await withRetryBroad(() => getMemoryIndex(ownerEns), {
+            maxAttempts: 4, baseDelayMs: 400, label: `[confirm] getMemoryIndex(${ownerEns})`,
+          }).catch(() => null)
+          const nextRef = await withRetryBroad(
+            () => addEntryToManifest(storage, currentRef, ownerEns, manifestEntryPayload),
+            { maxAttempts: 5, baseDelayMs: 500, label: `[confirm] addEntryToManifest(${ownerEns})` },
+          )
+          await withRetryBroad(() => setMemoryIndex(ensKey, ownerEns, nextRef), {
+            maxAttempts: 6, baseDelayMs: 600, label: `[confirm] setMemoryIndex(${ownerEns})`,
+          }).catch(err => console.warn('[confirm] setMemoryIndex failed:', (err as Error)?.message))
+        }
+      })().catch(err => console.warn('[confirm] ENS manifest error:', (err as Error)?.message))
+    }
+
+    res.json({ entryId: dbPublicId, txHash })
   })
 
   // ─── POST /query ─────────────────────────────────────────────────────────
@@ -725,14 +896,44 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
     const onChainEntry = await getEntryFromChain(entryId)
     if (!onChainEntry) { res.status(404).json({ error: 'entry not found on chain' }); return }
     if (onChainEntry.status !== 0) {
-      res.json({ entryId, inftTokenId: onChainEntry.inftTokenId.toString(), status: onChainEntry.status }); return
+      res.json({
+        entryId,
+        inftTokenId: onChainEntry.inftTokenId.toString(),
+        status: onChainEntry.status,
+      })
+      return
     }
-    const tokenId = await activateEntryOnChain(entryId)
-      .catch(() => getInftTokenId(entryId).catch(() => null))
-    if (tokenId && tokenId > 0n) {
+
+    let tokenId: bigint | null = null
+    try {
+      tokenId = await activateEntryOnChain(entryId)
+    } catch (e) {
+      const detail = ((e as Error)?.message ?? String(e)).slice(0, 520)
+      console.error('[POST /activate]', entryId, detail)
+      const tid = await getInftTokenId(entryId).catch(() => null)
+      res.status(400).json({
+        error:
+          'activateEntry failed — ensure API operator wallet is setAuthorized on MnemosyneRegistry (or registry owner calls), Galileo txs ok, and challenge window elapsed.',
+        detail,
+        inftTokenId: tid !== null && tid > 0n ? tid.toString() : '0',
+      })
+      return
+    }
+
+    if (!tokenId || tokenId === 0n) {
+      tokenId = await getInftTokenId(entryId).catch(() => null)
+    }
+
+    if (tokenId != null && tokenId > 0n) {
       upsertEntry(entryId, { status: 1, inftTokenId: tokenId.toString() })
     }
-    res.json({ entryId, inftTokenId: tokenId?.toString() ?? '0' })
+
+    const finalEntry = await getEntryFromChain(entryId)
+    res.json({
+      entryId,
+      inftTokenId: tokenId?.toString() ?? finalEntry?.inftTokenId?.toString() ?? '0',
+      status: finalEntry?.status,
+    })
   })
 
   // ─── POST /load-manifest ─────────────────────────────────────────────────
