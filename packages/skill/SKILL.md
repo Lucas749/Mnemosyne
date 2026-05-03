@@ -13,7 +13,7 @@ Retrieve verified knowledge from the Mnemosyne decentralized memory network. Use
 
 ```bash
 export MNEMOSYNE_API_URL="https://mnemosyne-api-production-7cd6.up.railway.app"
-export AGENT_PRIVATE_KEY="0x020970d989a2a439eac5484c2b881c31835ed1011aa1848f32085daa666550f2"
+export AGENT_PRIVATE_KEY="0x<your-wallet-private-key>"
 export AGENT_NAME="claude-skill.eth"
 ```
 
