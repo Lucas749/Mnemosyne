@@ -32,3 +32,5 @@ ideation/
 packages/api/mnemosyne.db
 packages/api/mnemosyne.db-shm
 packages/api/mnemosyne.db-wal
+
+.claude/
