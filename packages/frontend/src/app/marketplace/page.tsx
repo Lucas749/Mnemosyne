@@ -24,6 +24,8 @@ type EntryData = {
   royaltiesEarned: bigint; lastQueriedAt: bigint; inftTokenId: bigint
 }
 
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
+
 export default function MarketplacePage() {
   const { address } = useAccount()
   const [sort, setSort] = useState<'price' | 'newest'>('price')
@@ -33,6 +35,7 @@ export default function MarketplacePage() {
   const [listTokenId, setListTokenId] = useState('')
   const [txHash, setTxHash] = useState<string | null>(null)
   const [txError, setTxError] = useState<string | null>(null)
+  const [activating, setActivating] = useState<string | null>(null)
 
   const { data: rawListings, isLoading, refetch, isError } = useReadContract({
     address: MARKET_ADDRESS,
@@ -76,6 +79,23 @@ export default function MarketplacePage() {
     if (sort === 'price') return a.price < b.price ? -1 : 1
     return a.tokenId < b.tokenId ? 1 : -1
   })
+
+  async function handleActivate(entryId: string) {
+    setActivating(entryId)
+    try {
+      const res = await fetch(`${API}/activate/${entryId}`, { method: 'POST' })
+      const data = await res.json()
+      if (data.inftTokenId && data.inftTokenId !== '0') {
+        setTxHash(`Activated — iNFT #${data.inftTokenId}`)
+      } else {
+        setTxError('Activation returned no token ID — challenge window may not have passed yet.')
+      }
+    } catch (e) {
+      setTxError('Activation request failed')
+    } finally {
+      setActivating(null)
+    }
+  }
 
   function handleBuy(listing: Listing) {
     setTxError(null)
@@ -160,6 +180,15 @@ export default function MarketplacePage() {
                       </span>
                       <span style={{ fontSize: 10, color: T.text, fontWeight: 700 }}>{formatA0GI(e.stakeAmount)} A0GI</span>
                     </div>
+                    {e.inftTokenId === 0n && (
+                      <button
+                        onClick={() => handleActivate(e.id)}
+                        disabled={activating === e.id}
+                        style={{ marginTop: 8, width: '100%', background: 'none', border: `1px solid ${T.accent}`, borderRadius: 2, padding: '4px 8px', fontFamily: T.codeFont, fontSize: 9, color: T.accent, cursor: 'pointer', letterSpacing: '0.08em' }}
+                      >
+                        {activating === e.id ? 'ACTIVATING...' : 'ACTIVATE iNFT →'}
+                      </button>
+                    )}
                     {isListed && (
                       <div style={{ marginTop: 6, fontSize: 9, color: T.accent }}>● LISTED FOR SALE</div>
                     )}

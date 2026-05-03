@@ -9,7 +9,7 @@
 const API = 'https://mnemosyne-api-production-7cd6.up.railway.app'
 const SUBMITTER = 'demo.mnemosyne.eth'
 const POLL_INTERVAL_MS = 3000
-const JOB_TIMEOUT_MS = 120_000
+const JOB_TIMEOUT_MS = 300_000
 
 // ─── Demo entries ──────────────────────────────────────────────────────────────
 
