@@ -282,7 +282,7 @@ AGENT_PRIVATE_KEY=0x... ./scripts/test-pay.sh
 | Contract | Address | Explorer |
 |---|---|---|
 | `MnemosyneRegistry` | `0xaA40404DC25248c886c8fb6C27e34536aB2b8001` | [view](https://chainscan-galileo.0g.ai/address/0xaA40404DC25248c886c8fb6C27e34536aB2b8001) |
-| `MnemosyneINFT` | `0x8fbDb7666F8D301d9C974982764ab1B39917cc82` | [view](https://chainscan-galileo.0g.ai/address/0x8fbDb7666F8D301d9C974982764ab1B39917cc82) |
+| `MnemosyneINFT` | `0x8fbDb7666F8D301d9C974982764ab1B39917cc82` | [view](https://chainscan-galileo.0g.ai/token/0x8fbDb7666F8D301d9C974982764ab1B39917cc82) |
 | `StakeVault` | `0x333E1BD1bA8970b11b0bFe13a6A98765788e5D71` | [view](https://chainscan-galileo.0g.ai/address/0x333E1BD1bA8970b11b0bFe13a6A98765788e5D71) |
 | `ChallengeManager` | `0xAe66d96339f43F72BCB0164F70E0cB90FA959166` | [view](https://chainscan-galileo.0g.ai/address/0xAe66d96339f43F72BCB0164F70E0cB90FA959166) |
 | `RoyaltyVault` | `0x4ad5B6a01CDCAcaC31Ce89e9B6e92EB5c8207507` | [view](https://chainscan-galileo.0g.ai/address/0x4ad5B6a01CDCAcaC31Ce89e9B6e92EB5c8207507) |
