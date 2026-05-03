@@ -132,12 +132,13 @@ TX_OUT=$(cast send \
   --rpc-url "$RPC" \
   --private-key "$AGENT_KEY" \
   --value "$PAY_WEI" \
-  --json \
+  --async \
   "$PAY_TO" 2>&1)
 
-TX_HASH=$(echo "$TX_OUT" | jq -r '.transactionHash // .hash // ""' 2>/dev/null)
+# --async prints just the tx hash
+TX_HASH=$(echo "$TX_OUT" | grep -oE '0x[a-fA-F0-9]{64}' | head -1)
 
-if [ -z "$TX_HASH" ] || [ "$TX_HASH" = "null" ]; then
+if [ -z "$TX_HASH" ]; then
   echo "  ${RED}✗ cast send failed:${RESET}"
   echo "$TX_OUT"
   exit 1
@@ -145,8 +146,8 @@ fi
 
 echo "  ${GREEN}✓ tx broadcast: ${CYAN}${TX_HASH}${RESET}"
 echo "  ${DIM}explorer: https://chainscan-galileo.0g.ai/tx/${TX_HASH}${RESET}"
-echo "  ${DIM}waiting for confirmation...${RESET}"
-sleep 8
+echo "  ${DIM}waiting 12s for confirmation...${RESET}"
+sleep 12
 
 # ── STEP 4: Retry unlock with X-Payment ───────────────────────────────────
 echo ""
