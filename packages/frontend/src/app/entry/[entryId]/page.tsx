@@ -194,8 +194,7 @@ export default function EntryPage() {
   ]
 
   const ensName = entryEns(entryId)
-  const ensUrl = `https://app.ens.domains/${ensName}`
-  const submitterEnsUrl = submitterEns ? `https://app.ens.domains/${submitterEns}` : null
+  const submitterEnsUrl = submitterEns ? `https://sepolia.app.ens.domains/${submitterEns}` : null
 
   // Prefer on-chain data; fall back to DB data when chain entry is missing
   const displayStatus  = entry?.status ?? 0
@@ -211,7 +210,7 @@ export default function EntryPage() {
   const hasChainData   = !!entry
 
   const infoRows: [string, React.ReactNode][] = [
-    ['Name', <a key="ens" href={ensUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, fontWeight: 700, textDecoration: 'none' }}>{ensName} ↗</a>],
+    ['Name', <span key="ens" style={{ color: T.accent, fontWeight: 700 }}>{ensName}</span>],
     ['Submitted', submitterEnsUrl
       ? <a key="sub" href={submitterEnsUrl} target="_blank" rel="noopener noreferrer" style={{ color: T.accent, textDecoration: 'none' }}>{submitterDisplay} ↗</a>
       : submitterDisplay],

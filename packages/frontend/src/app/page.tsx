@@ -1,88 +1,34 @@
 'use client'
 
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { useReadContract } from 'wagmi'
 import { MnemosyneForceGraph } from '@/components/force-graph'
-import { Tag, BtnPrimary, BtnGhost } from '@/components/design-system'
+import { Tag, BtnPrimary } from '@/components/design-system'
 import { T } from '@/components/design-system'
-import { REGISTRY_ADDRESS, REGISTRY_ABI, DOMAIN_LABELS } from '@/lib/contracts'
-import { zgTestnet } from '@/lib/chains'
-import { useGraphData, type FgNode } from '@/hooks/use-graph-data'
-import { entryEns } from '@/lib/entry-name'
+import { useGraphData } from '@/hooks/use-graph-data'
 
-const EVENT_ICONS: Record<string, string> = {
-  EntrySubmitted: '●', EntryActivated: '◆', QueryRecorded: '▶',
-  ChallengeOpened: '!', EntryVerified: '✓', RoyaltyPaid: '◎',
-}
-const EVENT_COLORS: Record<string, string> = {
-  EntrySubmitted: '#b45309', EntryActivated: '#166534', QueryRecorded: '#1d4ed8',
-  ChallengeOpened: '#991b1b', EntryVerified: '#166534', RoyaltyPaid: '#92400e',
-}
 
-function LiveFeed({ nodes }: { nodes: FgNode[] }) {
-  const recentEntries = nodes.filter(n => n.type === 'entry').slice(0, 8)
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://mnemosyne-api-production-7cd6.up.railway.app'
 
-  if (recentEntries.length === 0) {
-    return (
-      <div style={{ display: 'flex', flexDirection: 'column' }}>
-        <div style={{ fontSize: 9, letterSpacing: '0.15em', color: T.muted, padding: '0 0 10px', borderBottom: `1px solid ${T.border}`, marginBottom: 12 }}>
-          LIVE ACTIVITY
-        </div>
-        <div style={{ fontSize: 10, color: T.muted }}>No recent activity</div>
-      </div>
-    )
-  }
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
-      <div style={{ fontSize: 9, letterSpacing: '0.15em', color: T.muted, padding: '0 0 10px', borderBottom: `1px solid ${T.border}`, marginBottom: 12 }}>
-        LIVE ACTIVITY
-      </div>
-      {recentEntries.map(n => {
-        const eventType = 'EntrySubmitted'
-        return (
-          <div key={n.id} style={{ display: 'flex', gap: 10, paddingBottom: 12, marginBottom: 12, borderBottom: `1px solid ${T.borderLight}`, cursor: 'pointer' }}>
-            <span style={{ color: EVENT_COLORS[eventType], fontSize: 10, marginTop: 1, flexShrink: 0 }}>{EVENT_ICONS[eventType]}</span>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 9, fontWeight: 700, color: EVENT_COLORS[eventType], letterSpacing: '0.08em', marginBottom: 2 }}>{eventType}</div>
-              <div style={{ fontSize: 10, color: T.muted, lineHeight: 1.5 }}>
-                {n.submitter ? n.submitter.slice(0, 10) + '...' : 'agent'} submitted entry
-              </div>
-              <div style={{ fontSize: 9, color: T.borderLight, marginTop: 3 }}>
-                Domain: {n.domainLabel ?? 'unknown'}
-              </div>
-            </div>
-          </div>
-        )
-      })}
-    </div>
-  )
-}
+type DbEntry = { entryId: string; content: string; tags: string[]; domain: string | null }
 
 export default function HomePage() {
-  const { nodes, links, entries, loading } = useGraphData(60)
+  const { nodes, links, loading } = useGraphData(60)
+  const [dbEntries, setDbEntries] = useState<DbEntry[]>([])
+  const [apiLoading, setApiLoading] = useState(true)
 
-  const { data: totalCount } = useReadContract({
-    address: REGISTRY_ADDRESS,
-    abi: REGISTRY_ABI,
-    functionName: 'getTotalEntryCount',
-    chainId: zgTestnet.id,
-  })
-
-  const topEntries = nodes
-    .filter(n => n.type === 'entry')
-    .sort((a, b) => (b.queryCount ?? 0) - (a.queryCount ?? 0))
-    .slice(0, 8)
-
-  const agentCount = nodes.filter(n => n.type === 'agent').length
-  const totalQueries = nodes
-    .filter(n => n.type === 'entry')
-    .reduce((sum, n) => sum + (n.queryCount ?? 0), 0)
+  useEffect(() => {
+    fetch(`${API}/entries`)
+      .then(r => r.json())
+      .then((data: DbEntry[]) => {
+        setDbEntries(data.filter(e => e.content))
+        setApiLoading(false)
+      })
+      .catch(() => setApiLoading(false))
+  }, [])
 
   const stats = [
-    { label: 'TOTAL ENTRIES', value: totalCount !== undefined ? totalCount.toString() : (entries.length > 0 ? entries.length.toString() : '—') },
-    { label: 'ACTIVE AGENTS', value: agentCount > 0 ? agentCount.toString() : '—' },
-    { label: 'QUERIES SERVED', value: totalQueries > 0 ? totalQueries.toLocaleString() : '—' },
+    { label: 'TOTAL ENTRIES', value: apiLoading ? '—' : dbEntries.length.toString() },
     { label: 'CHAIN', value: '0G-Galileo' },
     { label: 'REGISTRY', value: '0xaA40...8001' },
     { label: 'NETWORK', value: 'TESTNET' },
@@ -132,35 +78,30 @@ export default function HomePage() {
           </div>
 
           <h2 style={{ fontSize: 14, fontWeight: 700, color: T.text, borderBottom: `2px solid ${T.border}`, paddingBottom: 6, marginBottom: 16, letterSpacing: '0.04em' }}>
-            Most Queried Entries
+            Knowledge Entries
           </h2>
 
-          {topEntries.length > 0 ? (
+          {dbEntries.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-              {topEntries.map((entry, i) => (
-                <Link key={entry.id} href={`/entry/${entry.id}`} style={{ textDecoration: 'none' }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', gap: 16, padding: '12px 0',
-                    borderBottom: `1px solid ${T.borderLight}`, cursor: 'pointer',
-                  }}>
-                    <span style={{ fontSize: 12, color: T.muted, width: 18, flexShrink: 0 }}>#{i + 1}</span>
-                    <span style={{ fontSize: 12, color: T.accent, flex: 1 }}>
-                      {entryEns(entry.id)}
-                    </span>
-                    <Tag>{entry.domainLabel ?? 'unknown'}</Tag>
-                    <span style={{ fontSize: 10, color: T.muted, width: 60, textAlign: 'right' }}>
-                      {(entry.queryCount ?? 0).toLocaleString()} q
-                    </span>
-                    <span style={{ fontSize: 10, color: T.muted, width: 80, textAlign: 'right' }}>
-                      {entry.submitter ? entry.submitter.slice(0, 8) + '...' : ''}
-                    </span>
-                  </div>
-                </Link>
-              ))}
+              {dbEntries.slice(0, 8).map((entry, i) => {
+                const title = entry.content.split('\n')[0].replace(/^#+ /, '') || entry.entryId.slice(0, 16) + '...'
+                return (
+                  <Link key={entry.entryId} href={`/entry/${entry.entryId}`} style={{ textDecoration: 'none' }}>
+                    <div style={{
+                      display: 'flex', alignItems: 'center', gap: 16, padding: '12px 0',
+                      borderBottom: `1px solid ${T.borderLight}`, cursor: 'pointer',
+                    }}>
+                      <span style={{ fontSize: 12, color: T.muted, width: 18, flexShrink: 0 }}>#{i + 1}</span>
+                      <span style={{ fontSize: 12, color: T.accent, flex: 1 }}>{title}</span>
+                      <Tag>{entry.domain ?? 'unknown'}</Tag>
+                    </div>
+                  </Link>
+                )
+              })}
             </div>
           ) : (
             <div style={{ fontSize: 11, color: T.muted, padding: '16px 0' }}>
-              {loading ? 'Loading entries from chain...' : 'No entries found on-chain.'}
+              {apiLoading ? 'Loading entries...' : 'No entries found.'}
             </div>
           )}
         </div>
@@ -182,13 +123,6 @@ export default function HomePage() {
             <Link href="/submit" style={{ textDecoration: 'none' }}>
               <BtnPrimary style={{ width: '100%', textAlign: 'center' }}>+ SUBMIT ENTRY</BtnPrimary>
             </Link>
-            <Link href="/challenge" style={{ textDecoration: 'none' }}>
-              <BtnGhost style={{ width: '100%', textAlign: 'center' }}>CHALLENGE ARENA</BtnGhost>
-            </Link>
-          </div>
-
-          <div style={{ background: T.surface, border: `1px solid ${T.border}`, borderRadius: 3, padding: '14px 16px' }}>
-            <LiveFeed nodes={nodes} />
           </div>
         </div>
       </div>
