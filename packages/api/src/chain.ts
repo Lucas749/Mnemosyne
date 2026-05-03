@@ -442,9 +442,18 @@ export async function activateEntryOnChain(entryId: `0x${string}`): Promise<bigi
 export async function getEntryIdFromTxHash(txHash: `0x${string}`): Promise<`0x${string}` | null> {
   const c = clients()
   if (!c) return null
-  const receipt = await c.pub.getTransactionReceipt({ hash: txHash }).catch(() => null)
-  if (!receipt || receipt.status !== 'success') return null
-  return decodeEntrySubmittedFromReceipt(receipt, ADDR.registry)
+
+  // Retry for up to 90s — frontend calls this immediately after broadcast, tx may still be pending
+  const deadline = Date.now() + 90_000
+  while (Date.now() < deadline) {
+    const receipt = await c.pub.getTransactionReceipt({ hash: txHash }).catch(() => null)
+    if (receipt) {
+      if (receipt.status !== 'success') return null
+      return decodeEntrySubmittedFromReceipt(receipt, ADDR.registry)
+    }
+    await new Promise(r => setTimeout(r, 3000))
+  }
+  return null
 }
 
 /**
