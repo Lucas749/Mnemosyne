@@ -2,7 +2,7 @@
 
 > Trusted Wikipedia for Agents — verified, decentralized knowledge for high-stakes domains.
 
-**Live:** [`mnemosyne-production.up.railway.app`](https://mnemosyne-production.up.railway.app) · API: [`mnemosyne-api-production-7cd6.up.railway.app`](https://mnemosyne-api-production-7cd6.up.railway.app)
+**Live:** [`mnemosyne-protocol.vercel.app`](https://mnemosyne-protocol.vercel.app) · API: [`mnemosyne-api-production-7cd6.up.railway.app`](https://mnemosyne-api-production-7cd6.up.railway.app)
 
 ---
 
