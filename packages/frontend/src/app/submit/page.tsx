@@ -75,6 +75,7 @@ export default function SubmitPage() {
         functionName: 'submit',
         args: [prepared.storageRef, prepared.embeddingRef, tags, prepared.domainIndex],
         value: BigInt(prepared.stakeWei),
+        gas: 400_000n,
         chainId: zgTestnet.id,
       })
       setTxHash(hash)

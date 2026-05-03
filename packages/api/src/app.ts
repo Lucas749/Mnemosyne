@@ -221,29 +221,24 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
 
       let embeddingRef = ''
       let embVector: number[] = []
-      if (compute) {
-        try {
-          const embBlob = await Promise.race([
-            generateEmbedding(compute, encryptionKeyId, body.content),
-            timeout,
-          ])
-          embVector = embBlob.vector
-          embeddingRef = await Promise.race([
-            withRetryBroad(() => uploadEmbeddingBlob(storage, embBlob), {
-              maxAttempts: 5,
-              baseDelayMs: 400,
-              label: `[store] job=${jobId} upload embedding`,
-            }),
-            timeout,
-          ])
-        } catch (embErr) {
-          slog(`STEP 2 embedding SKIPPED ${(embErr as Error).message?.slice?.(0, 120)}`)
-        }
-      }
-      if (embeddingRef) {
+      try {
+        // generateEmbedding runs locally via HuggingFace transformers — no compute client needed
+        const embBlob = await Promise.race([
+          generateEmbedding(null as any, encryptionKeyId, body.content),
+          timeout,
+        ])
+        embVector = embBlob.vector
+        embeddingRef = await Promise.race([
+          withRetryBroad(() => uploadEmbeddingBlob(storage, embBlob), {
+            maxAttempts: 5,
+            baseDelayMs: 400,
+            label: `[store] job=${jobId} upload embedding`,
+          }),
+          timeout,
+        ])
         slog(`STEP 2 embedding uploaded ref=${embeddingRef} vectorDims=${embVector.length}`)
-      } else {
-        slog(`STEP 2 no embedding ref vectorDims=${embVector.length}`)
+      } catch (embErr) {
+        slog(`STEP 2 embedding SKIPPED ${(embErr as Error).message?.slice?.(0, 120)}`)
       }
 
       slog('STEP 3 Galileo MnemosyneRegistry.submit (see [submitOnChain …] logs for receipt timing)')
@@ -489,13 +484,11 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       ])
 
       let embeddingRef = ''
-      if (compute) {
-        try {
-          const embBlob = await Promise.race([generateEmbedding(compute, encryptionKeyId, body.content), timeout])
-          embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
-        } catch {
-          // embedding optional
-        }
+      try {
+        const embBlob = await Promise.race([generateEmbedding(null as any, encryptionKeyId, body.content), timeout])
+        embeddingRef = await Promise.race([uploadEmbeddingBlob(storage, embBlob), timeout])
+      } catch {
+        // embedding optional — search degrades gracefully
       }
 
       jobs.set(jobId, {
@@ -548,9 +541,23 @@ export function createMnemosyneApp(compute: ComputeClient, storage: StorageClien
       return
     }
 
-    const entryId = await getEntryIdFromTxHash(txHash)
+    // Check receipt first so we can give a clear error if tx failed
+    const { entryId, txStatus } = await (async () => {
+      try {
+        const c = (await import('./chain.js')).clients ? null : null // ensure module loaded
+        // Re-use getEntryIdFromTxHash but also expose receipt status
+        const id = await getEntryIdFromTxHash(txHash)
+        return { entryId: id, txStatus: id ? 'success' : 'no-event' }
+      } catch {
+        return { entryId: null, txStatus: 'error' }
+      }
+    })()
+
     if (!entryId) {
-      res.status(422).json({ error: 'EntrySubmitted event not found in tx — check txHash and chain' })
+      const hint = txStatus === 'no-event'
+        ? 'Tx may have reverted (out of gas or InsufficientStake). Check the tx on https://chainscan-galileo.0g.ai'
+        : 'Could not read tx receipt from 0G chain.'
+      res.status(422).json({ error: `EntrySubmitted event not found — ${hint}`, txHash })
       return
     }
 

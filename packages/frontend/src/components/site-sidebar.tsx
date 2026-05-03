@@ -15,7 +15,6 @@ const sections = [
   {
     heading: 'PROTOCOL',
     items: [
-      { label: 'Challenge Arena', href: '/challenge' },
       { label: 'iNFT Marketplace', href: '/marketplace' },
       { label: 'Agent Skill', href: '/skill' },
     ],

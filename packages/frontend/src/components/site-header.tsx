@@ -11,7 +11,6 @@ import { SearchModal } from './search-modal'
 const NAV_LINKS = [
   { href: '/', label: 'HOME' },
   { href: '/explore', label: 'EXPLORE' },
-  { href: '/challenge', label: 'CHALLENGE' },
   { href: '/marketplace', label: 'MARKET' },
   { href: '/skill', label: 'AGENT SKILL' },
 ]
