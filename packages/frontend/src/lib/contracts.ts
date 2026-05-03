@@ -75,6 +75,18 @@ export const REGISTRY_ABI = [
     inputs: [],
     outputs: [{ type: 'uint256' }],
   },
+  {
+    name: 'submit',
+    type: 'function',
+    stateMutability: 'payable',
+    inputs: [
+      { name: 'storageRef', type: 'string' },
+      { name: 'embeddingRef', type: 'string' },
+      { name: 'tags', type: 'string[]' },
+      { name: 'domain', type: 'uint8' },
+    ],
+    outputs: [{ type: 'bytes32' }],
+  },
 ] as const
 
 export const INFT_ABI = [
